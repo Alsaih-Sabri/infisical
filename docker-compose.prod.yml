@@ -53,6 +53,10 @@ volumes:
     driver: local
 
 networks:
-  infisical:
+      - infisical        # Internal network for DB/Redis
+      - dokploy-network  # External network for Traefik proxy
+
 networks:
-  - dokploy-network
+  infisical:             # Creates a private network for this compose file
+  dokploy-network:
+    external: true 
