@@ -17,7 +17,8 @@ services:
     environment:
       - NODE_ENV=production
     networks:
-      - infisical
+      - infisical        # Internal network for DB/Redis
+      - dokploy-network  # External network for Traefik proxy
 
   redis:
     image: redis
@@ -51,10 +52,6 @@ volumes:
     driver: local
   redis_data:
     driver: local
-
-networks:
-      - infisical        # Internal network for DB/Redis
-      - dokploy-network  # External network for Traefik proxy
 
 networks:
   infisical:             # Creates a private network for this compose file
