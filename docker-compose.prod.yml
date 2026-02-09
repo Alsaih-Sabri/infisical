@@ -12,8 +12,8 @@ services:
     image: infisical/infisical:latest # PIN THIS TO A SPECIFIC TAG
     pull_policy: always
     env_file: .env
-    ports:
-      - 8080:8080
+    #ports:
+    #  - 8080:8080
     environment:
       - NODE_ENV=production
     networks:
