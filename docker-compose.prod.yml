@@ -54,3 +54,5 @@ volumes:
 
 networks:
   infisical:
+networks:
+  - dokploy-network
