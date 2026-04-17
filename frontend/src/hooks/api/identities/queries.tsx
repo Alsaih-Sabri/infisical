@@ -17,6 +17,7 @@ import {
   IdentityOciAuth,
   IdentityOidcAuth,
   IdentityProjectMembershipV1,
+  IdentitySpiffeAuth,
   IdentityTlsCertAuth,
   IdentityTokenAuth,
   IdentityUniversalAuth,
@@ -45,6 +46,7 @@ export const identitiesKeys = {
   getIdentityAzureAuth: (identityId: string) => [{ identityId }, "identity-azure-auth"] as const,
   getIdentityTokenAuth: (identityId: string) => [{ identityId }, "identity-token-auth"] as const,
   getIdentityJwtAuth: (identityId: string) => [{ identityId }, "identity-jwt-auth"] as const,
+  getIdentitySpiffeAuth: (identityId: string) => [{ identityId }, "identity-spiffe-auth"] as const,
   getIdentityLdapAuth: (identityId: string) => [{ identityId }, "identity-ldap-auth"] as const,
   getIdentityTokensTokenAuth: (identityId: string) =>
     [{ identityId }, "identity-tokens-token-auth"] as const,
@@ -328,9 +330,11 @@ export const useGetIdentityLdapAuth = (
   });
 };
 
-export const useGetIdentityTokensTokenAuth = (identityId: string) => {
+export const useGetIdentityTokensTokenAuth = (
+  identityId: string,
+  options?: TReactQueryOptions["options"]
+) => {
   return useQuery({
-    enabled: Boolean(identityId),
     queryKey: identitiesKeys.getIdentityTokensTokenAuth(identityId),
     queryFn: async () => {
       const {
@@ -339,7 +343,11 @@ export const useGetIdentityTokensTokenAuth = (identityId: string) => {
         `/api/v1/auth/token-auth/identities/${identityId}/tokens`
       );
       return tokens;
-    }
+    },
+    staleTime: 0,
+    gcTime: 0,
+    ...options,
+    enabled: Boolean(identityId) && (options?.enabled ?? true)
   });
 };
 
@@ -378,6 +386,28 @@ export const useGetIdentityJwtAuth = (
       );
 
       return identityJwtAuth;
+    },
+    staleTime: 0,
+    gcTime: 0,
+    ...options,
+    enabled: Boolean(identityId) && (options?.enabled ?? true)
+  });
+};
+
+export const useGetIdentitySpiffeAuth = (
+  identityId: string,
+  options?: TReactQueryOptions["options"]
+) => {
+  return useQuery({
+    queryKey: identitiesKeys.getIdentitySpiffeAuth(identityId),
+    queryFn: async () => {
+      const {
+        data: { identitySpiffeAuth }
+      } = await apiRequest.get<{ identitySpiffeAuth: IdentitySpiffeAuth }>(
+        `/api/v1/auth/spiffe-auth/identities/${identityId}`
+      );
+
+      return identitySpiffeAuth;
     },
     staleTime: 0,
     gcTime: 0,

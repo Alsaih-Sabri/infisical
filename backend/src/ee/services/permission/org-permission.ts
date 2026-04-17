@@ -15,9 +15,20 @@ export enum OrgPermissionActions {
   Delete = "delete"
 }
 
+export enum OrgPermissionSsoActions {
+  Read = "read",
+  Create = "create",
+  Edit = "edit",
+  Delete = "delete",
+  BypassSsoEnforcement = "bypass-sso-enforcement"
+}
+
 export enum OrgPermissionSubOrgActions {
   Create = "create",
-  DirectAccess = "direct-access"
+  Edit = "edit",
+  Delete = "delete",
+  DirectAccess = "direct-access",
+  LinkGroup = "link-group"
 }
 
 export enum OrgPermissionAppConnectionActions {
@@ -25,7 +36,8 @@ export enum OrgPermissionAppConnectionActions {
   Create = "create",
   Edit = "edit",
   Delete = "delete",
-  Connect = "connect"
+  Connect = "connect",
+  RotateCredentials = "rotate-credentials"
 }
 
 export enum OrgPermissionAuditLogsActions {
@@ -33,8 +45,7 @@ export enum OrgPermissionAuditLogsActions {
 }
 
 export enum OrgPermissionKmipActions {
-  Proxy = "proxy",
-  Setup = "setup"
+  Proxy = "proxy"
 }
 
 export enum OrgPermissionMachineIdentityAuthTemplateActions {
@@ -99,6 +110,13 @@ export enum OrgPermissionBillingActions {
   ManageBilling = "manage-billing"
 }
 
+export enum OrgPermissionEmailDomainActions {
+  Read = "read",
+  Create = "create",
+  VerifyDomain = "verify-domain",
+  Delete = "delete"
+}
+
 export enum OrgPermissionSubjects {
   Workspace = "workspace",
   Project = "project",
@@ -125,7 +143,8 @@ export enum OrgPermissionSubjects {
   Gateway = "gateway",
   Relay = "relay",
   SecretShare = "secret-share",
-  SubOrganization = "sub-organization"
+  SubOrganization = "sub-organization",
+  EmailDomains = "email-domains"
 }
 
 export type AppConnectionSubjectFields = {
@@ -140,7 +159,7 @@ export type OrgPermissionSet =
   | [OrgPermissionActions, OrgPermissionSubjects.Member]
   | [OrgPermissionActions, OrgPermissionSubjects.Settings]
   | [OrgPermissionActions, OrgPermissionSubjects.IncidentAccount]
-  | [OrgPermissionActions, OrgPermissionSubjects.Sso]
+  | [OrgPermissionSsoActions, OrgPermissionSubjects.Sso]
   | [OrgPermissionActions, OrgPermissionSubjects.Scim]
   | [OrgPermissionActions, OrgPermissionSubjects.GithubOrgSync]
   | [OrgPermissionActions, OrgPermissionSubjects.GithubOrgSyncManual]
@@ -164,7 +183,8 @@ export type OrgPermissionSet =
   | [OrgPermissionAdminConsoleAction, OrgPermissionSubjects.AdminConsole]
   | [OrgPermissionMachineIdentityAuthTemplateActions, OrgPermissionSubjects.MachineIdentityAuthTemplate]
   | [OrgPermissionKmipActions, OrgPermissionSubjects.Kmip]
-  | [OrgPermissionSecretShareAction, OrgPermissionSubjects.SecretShare];
+  | [OrgPermissionSecretShareAction, OrgPermissionSubjects.SecretShare]
+  | [OrgPermissionEmailDomainActions, OrgPermissionSubjects.EmailDomains];
 
 const AppConnectionConditionSchema = z
   .object({
@@ -214,7 +234,7 @@ export const OrgPermissionSchema = z.discriminatedUnion("subject", [
   }),
   z.object({
     subject: z.literal(OrgPermissionSubjects.Sso).describe("The entity this permission pertains to."),
-    action: CASL_ACTION_SCHEMA_NATIVE_ENUM(OrgPermissionActions).describe("Describe what action an entity can take.")
+    action: CASL_ACTION_SCHEMA_NATIVE_ENUM(OrgPermissionSsoActions).describe("Describe what action an entity can take.")
   }),
   z.object({
     subject: z.literal(OrgPermissionSubjects.Scim).describe("The entity this permission pertains to."),
@@ -315,6 +335,12 @@ export const OrgPermissionSchema = z.discriminatedUnion("subject", [
     action: CASL_ACTION_SCHEMA_NATIVE_ENUM(OrgPermissionRelayActions).describe(
       "Describe what action an entity can take."
     )
+  }),
+  z.object({
+    subject: z.literal(OrgPermissionSubjects.EmailDomains).describe("The entity this permission pertains to."),
+    action: CASL_ACTION_SCHEMA_NATIVE_ENUM(OrgPermissionEmailDomainActions).describe(
+      "Describe what action an entity can take."
+    )
   })
 ]);
 
@@ -325,7 +351,10 @@ const buildAdminPermission = () => {
   can(OrgPermissionActions.Create, OrgPermissionSubjects.Project);
 
   can(OrgPermissionSubOrgActions.Create, OrgPermissionSubjects.SubOrganization);
+  can(OrgPermissionSubOrgActions.Edit, OrgPermissionSubjects.SubOrganization);
+  can(OrgPermissionSubOrgActions.Delete, OrgPermissionSubjects.SubOrganization);
   can(OrgPermissionSubOrgActions.DirectAccess, OrgPermissionSubjects.SubOrganization);
+  can(OrgPermissionSubOrgActions.LinkGroup, OrgPermissionSubjects.SubOrganization);
 
   // role permission
   can(OrgPermissionActions.Read, OrgPermissionSubjects.Role);
@@ -353,10 +382,11 @@ const buildAdminPermission = () => {
   can(OrgPermissionActions.Edit, OrgPermissionSubjects.IncidentAccount);
   can(OrgPermissionActions.Delete, OrgPermissionSubjects.IncidentAccount);
 
-  can(OrgPermissionActions.Read, OrgPermissionSubjects.Sso);
-  can(OrgPermissionActions.Create, OrgPermissionSubjects.Sso);
-  can(OrgPermissionActions.Edit, OrgPermissionSubjects.Sso);
-  can(OrgPermissionActions.Delete, OrgPermissionSubjects.Sso);
+  can(OrgPermissionSsoActions.Read, OrgPermissionSubjects.Sso);
+  can(OrgPermissionSsoActions.Create, OrgPermissionSubjects.Sso);
+  can(OrgPermissionSsoActions.Edit, OrgPermissionSubjects.Sso);
+  can(OrgPermissionSsoActions.Delete, OrgPermissionSubjects.Sso);
+  can(OrgPermissionSsoActions.BypassSsoEnforcement, OrgPermissionSubjects.Sso);
 
   can(OrgPermissionActions.Read, OrgPermissionSubjects.Scim);
   can(OrgPermissionActions.Create, OrgPermissionSubjects.Scim);
@@ -418,6 +448,7 @@ const buildAdminPermission = () => {
   can(OrgPermissionAppConnectionActions.Edit, OrgPermissionSubjects.AppConnections);
   can(OrgPermissionAppConnectionActions.Delete, OrgPermissionSubjects.AppConnections);
   can(OrgPermissionAppConnectionActions.Connect, OrgPermissionSubjects.AppConnections);
+  can(OrgPermissionAppConnectionActions.RotateCredentials, OrgPermissionSubjects.AppConnections);
 
   can(OrgPermissionGatewayActions.ListGateways, OrgPermissionSubjects.Gateway);
   can(OrgPermissionGatewayActions.CreateGateways, OrgPermissionSubjects.Gateway);
@@ -431,8 +462,6 @@ const buildAdminPermission = () => {
   can(OrgPermissionRelayActions.DeleteRelays, OrgPermissionSubjects.Relay);
 
   can(OrgPermissionAdminConsoleAction.AccessAllProjects, OrgPermissionSubjects.AdminConsole);
-
-  can(OrgPermissionKmipActions.Setup, OrgPermissionSubjects.Kmip);
 
   // the proxy assignment is temporary in order to prevent "more privilege" error during role assignment to MI
   can(OrgPermissionKmipActions.Proxy, OrgPermissionSubjects.Kmip);
@@ -457,6 +486,11 @@ const buildAdminPermission = () => {
   );
 
   can(OrgPermissionSecretShareAction.ManageSettings, OrgPermissionSubjects.SecretShare);
+
+  can(OrgPermissionEmailDomainActions.Read, OrgPermissionSubjects.EmailDomains);
+  can(OrgPermissionEmailDomainActions.Create, OrgPermissionSubjects.EmailDomains);
+  can(OrgPermissionEmailDomainActions.VerifyDomain, OrgPermissionSubjects.EmailDomains);
+  can(OrgPermissionEmailDomainActions.Delete, OrgPermissionSubjects.EmailDomains);
 
   return rules;
 };

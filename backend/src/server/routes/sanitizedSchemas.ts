@@ -10,6 +10,7 @@ import {
   ProjectRolesSchema,
   ProjectsSchema,
   SecretApprovalPoliciesSchema,
+  SecretSharingSchema,
   SecretTagsSchema,
   UsersSchema
 } from "@app/db/schemas";
@@ -105,6 +106,17 @@ export const sapPubSchema = SecretApprovalPoliciesSchema.merge(
     projectId: z.string()
   })
 );
+
+export const SanitizedUserSchema = UsersSchema.pick({
+  username: true,
+  email: true,
+  isEmailVerified: true,
+  firstName: true,
+  lastName: true,
+  id: true
+}).extend({
+  publicKey: z.string().nullable().optional()
+});
 
 export const sanitizedServiceTokenUserSchema = UsersSchema.pick({
   authMethods: true,
@@ -288,10 +300,27 @@ export const InternalCertificateAuthorityResponseSchema = CertificateAuthorities
   InternalCertificateAuthoritiesSchema.omit({
     caId: true,
     notAfter: true,
-    notBefore: true
+    notBefore: true,
+    autoRenewalEnabled: true,
+    autoRenewalDaysBeforeExpiry: true,
+    lastRenewalStatus: true,
+    lastRenewalMessage: true,
+    lastRenewalAt: true
   })
 ).extend({
   requireTemplateForIssuance: z.boolean().optional(),
   notAfter: z.string().optional(),
   notBefore: z.string().optional()
+});
+
+export const SanitizedSecretSharingSchema = SecretSharingSchema.omit({
+  encryptedSecret: true,
+  hashedHex: true,
+  iv: true,
+  tag: true,
+  encryptedValue: true,
+  password: true,
+  identifier: true // we map identifier -> id
+}).extend({
+  id: z.string() // override from uuid -> string
 });

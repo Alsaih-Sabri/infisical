@@ -29,6 +29,7 @@ export enum EventType {
   CREATE_SECRET = "create-secret",
   UPDATE_SECRET = "update-secret",
   DELETE_SECRET = "delete-secret",
+  REDACT_SECRET_VERSION_VALUE = "redact-secret-version-value",
   GET_PROJECT_KEY = "get-project-key",
   AUTHORIZE_INTEGRATION = "authorize-integration",
   UPDATE_INTEGRATION_AUTH = "update-integration-auth",
@@ -239,6 +240,12 @@ export enum EventType {
   DASHBOARD_GET_SECRET_VALUE = "dashboard-get-secret-value",
   DASHBOARD_GET_SECRET_VERSION_VALUE = "dashboard-get-secret-version-value",
 
+  VIEW_INSIGHTS_SECRETS_MANAGEMENT_CALENDAR = "view-insights-secrets-management-calendar",
+  VIEW_INSIGHTS_SECRETS_MANAGEMENT_ACCESS_VOLUME = "view-insights-secrets-management-access-volume",
+  VIEW_INSIGHTS_SECRETS_MANAGEMENT_ACCESS_LOCATIONS = "view-insights-secrets-management-access-locations",
+  VIEW_INSIGHTS_SECRETS_MANAGEMENT_SUMMARY = "view-insights-secrets-management-summary",
+  VIEW_INSIGHTS_AUTH_METHODS = "view-insights-auth-methods",
+
   CREATE_PROJECT_ROLE = "create-project-role",
   UPDATE_PROJECT_ROLE = "update-project-role",
   DELETE_PROJECT_ROLE = "delete-project-role",
@@ -262,6 +269,7 @@ export enum EventType {
   PAM_SESSION_START = "pam-session-start",
   PAM_SESSION_LOGS_UPDATE = "pam-session-logs-update",
   PAM_SESSION_END = "pam-session-end",
+  PAM_SESSION_TERMINATE = "pam-session-terminate",
   PAM_SESSION_GET = "pam-session-get",
   PAM_SESSION_LIST = "pam-session-list",
   PAM_FOLDER_CREATE = "pam-folder-create",
@@ -272,11 +280,34 @@ export enum EventType {
   PAM_ACCOUNT_CREATE = "pam-account-create",
   PAM_ACCOUNT_UPDATE = "pam-account-update",
   PAM_ACCOUNT_DELETE = "pam-account-delete",
+  PAM_ACCOUNT_POLICY_CREATE = "pam-account-policy-create",
+  PAM_ACCOUNT_POLICY_UPDATE = "pam-account-policy-update",
+  PAM_ACCOUNT_POLICY_DELETE = "pam-account-policy-delete",
+  PAM_ACCOUNT_POLICY_LIST = "pam-account-policy-list",
+  PAM_ACCOUNT_POLICY_GET = "pam-account-policy-get",
+  PAM_ACCOUNT_READ_CREDENTIALS = "pam-account-read-credentials",
+  PAM_WEB_ACCESS_SESSION_TICKET_CREATED = "pam-web-access-session-ticket-created",
   PAM_RESOURCE_LIST = "pam-resource-list",
   PAM_RESOURCE_GET = "pam-resource-get",
   PAM_RESOURCE_CREATE = "pam-resource-create",
   PAM_RESOURCE_UPDATE = "pam-resource-update",
   PAM_RESOURCE_DELETE = "pam-resource-delete",
+
+  PAM_DISCOVERY_SOURCE_LIST = "pam-discovery-source-list",
+  PAM_DISCOVERY_SOURCE_GET = "pam-discovery-source-get",
+  PAM_DISCOVERY_SOURCE_CREATE = "pam-discovery-source-create",
+  PAM_DISCOVERY_SOURCE_UPDATE = "pam-discovery-source-update",
+  PAM_DISCOVERY_SOURCE_DELETE = "pam-discovery-source-delete",
+  PAM_DISCOVERY_SCAN = "pam-discovery-scan",
+  PAM_DISCOVERY_SOURCE_RUN_LIST = "pam-discovery-source-run-list",
+  PAM_DISCOVERY_SOURCE_RUN_GET = "pam-discovery-source-run-get",
+  PAM_DISCOVERY_SOURCE_RESOURCE_LIST = "pam-discovery-source-resource-list",
+  PAM_DISCOVERY_SOURCE_ACCOUNT_LIST = "pam-discovery-source-account-list",
+  PAM_RESOURCE_ROTATION_RULE_LIST = "pam-resource-rotation-rule-list",
+  PAM_RESOURCE_ROTATION_RULE_CREATE = "pam-resource-rotation-rule-create",
+  PAM_RESOURCE_ROTATION_RULE_UPDATE = "pam-resource-rotation-rule-update",
+  PAM_RESOURCE_ROTATION_RULE_DELETE = "pam-resource-rotation-rule-delete",
+  PAM_RESOURCE_ROTATION_RULE_REORDER = "pam-resource-rotation-rule-reorder",
 
   CREATE_CERTIFICATE_PROFILE = "create-certificate-profile",
   UPDATE_CERTIFICATE_PROFILE = "update-certificate-profile",
@@ -287,6 +318,10 @@ export enum EventType {
   SIGN_CERTIFICATE_FROM_PROFILE = "sign-certificate-from-profile",
   ORDER_CERTIFICATE_FROM_PROFILE = "order-certificate-from-profile",
   GET_CERTIFICATE_PROFILE_LATEST_ACTIVE_BUNDLE = "get-certificate-profile-latest-active-bundle",
+
+  SCEP_ENROLLMENT = "scep-enrollment",
+  SCEP_RENEWAL = "scep-renewal",
+  SCEP_DYNAMIC_CHALLENGE_GENERATED = "scep-dynamic-challenge-generated",
 
   APPROVAL_POLICY_CREATE = "approval-policy-create",
   APPROVAL_POLICY_UPDATE = "approval-policy-update",
@@ -342,5 +377,10 @@ export enum EventType {
   DELETE_DYNAMIC_SECRET_LEASE = "delete-dynamic-secret-lease",
   RENEW_DYNAMIC_SECRET_LEASE = "renew-dynamic-secret-lease",
   LIST_DYNAMIC_SECRET_LEASES = "list-dynamic-secret-leases",
-  GET_DYNAMIC_SECRET_LEASE = "get-dynamic-secret-lease"
+  GET_DYNAMIC_SECRET_LEASE = "get-dynamic-secret-lease",
+
+  // Secret Validation Rules
+  SECRET_VALIDATION_RULE_CREATE = "secret-validation-rule-create",
+  SECRET_VALIDATION_RULE_UPDATE = "secret-validation-rule-update",
+  SECRET_VALIDATION_RULE_DELETE = "secret-validation-rule-delete"
 }

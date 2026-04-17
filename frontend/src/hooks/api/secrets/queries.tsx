@@ -12,6 +12,7 @@ import { ERROR_NOT_ALLOWED_READ_SECRETS } from "./constants";
 import {
   GetSecretVersionsDTO,
   SecretAccessListEntry,
+  SecretAccessListGroupEntry,
   SecretType,
   SecretV3Raw,
   SecretV3RawResponse,
@@ -45,9 +46,13 @@ export const secretKeys = {
     projectId,
     environment,
     secretPath,
-    secretKey
+    secretKey,
+    includeAllEntities
   }: TGetSecretAccessListDTO) =>
-    ["secret-access-list", { projectId, environment, secretPath, secretKey }] as const,
+    [
+      "secret-access-list",
+      { projectId, environment, secretPath, secretKey, includeAllEntities }
+    ] as const,
   getSecretReferenceTree: (dto: TGetSecretReferenceTreeDTO) => ["secret-reference-tree", dto],
   getSecretReferences: (dto: TGetSecretReferencesDTO) => ["secret-references", dto]
 };
@@ -105,7 +110,7 @@ export const mergePersonalSecrets = (rawSecrets: SecretV3Raw[]) => {
     };
 
     if (el.type === SecretType.Personal) {
-      personalSecrets[decryptedSecret.key] = {
+      personalSecrets[`${decryptedSecret.key}_${el.environment}`] = {
         id: el.id,
         value: el.secretValue,
         env: el.environment,
@@ -117,12 +122,12 @@ export const mergePersonalSecrets = (rawSecrets: SecretV3Raw[]) => {
   });
 
   secrets.forEach((sec) => {
-    const personalSecret = personalSecrets?.[sec.key];
-    if (personalSecret && personalSecret.env === sec.env) {
+    const personalSecret = personalSecrets?.[`${sec.key}_${sec.env}`];
+    if (personalSecret) {
       sec.idOverride = personalSecret.id;
       sec.valueOverride = personalSecret.value;
       sec.overrideAction = "modified";
-      sec.isEmpty = personalSecret.isEmpty;
+      sec.isOverrideEmpty = personalSecret.isEmpty;
       sec.secretValueHidden = false;
     }
   });
@@ -300,14 +305,15 @@ export const useGetSecretAccessList = (dto: TGetSecretAccessListDTO) =>
     queryKey: secretKeys.getSecretAccessList(dto),
     queryFn: async () => {
       const { data } = await apiRequest.get<{
-        groups: SecretAccessListEntry[];
+        groups: SecretAccessListGroupEntry[];
         identities: SecretAccessListEntry[];
         users: SecretAccessListEntry[];
       }>(`/api/v1/secrets/${dto.secretKey}/access-list`, {
         params: {
           projectId: dto.projectId,
           environment: dto.environment,
-          secretPath: dto.secretPath
+          secretPath: dto.secretPath,
+          includeAllEntities: dto.includeAllEntities
         }
       });
 

@@ -9,6 +9,8 @@ import { blockLocalAndPrivateIpAddresses } from "@app/lib/validator/validate-url
 
 import { PKI_ALERT_RETRY_CONFIG, RETRYABLE_NETWORK_ERRORS } from "./pki-alert-v2-constants";
 import {
+  getRevocationReasonLabel,
+  PkiAlertEventType,
   TAlertInfo,
   TBuildSlackPayloadParams,
   TCertificatePreview,
@@ -49,21 +51,6 @@ export const validateSlackWebhookUrl = async (url: string): Promise<void> => {
 };
 
 /**
- * Masks the Slack webhook URL path to hide the token in logs.
- * The path contains the webhook token which should not be exposed.
- *
- * Example: https://hooks.slack.com/services/T00/B00/XXX -> https://hooks.slack.com/services/***
- */
-export const maskSlackWebhookUrl = (url: string): string => {
-  try {
-    const parsed = new URL(url);
-    return `${parsed.protocol}//${parsed.hostname}/services/***`;
-  } catch {
-    return "***";
-  }
-};
-
-/**
  * Builds a Slack Block Kit payload for certificate expiration alerts.
  *
  * Structure:
@@ -74,13 +61,29 @@ export const maskSlackWebhookUrl = (url: string): string => {
  * - "+N more" context if there are additional certificates
  * - Action button linking to Infisical
  */
+const getSlackEventConfig = (eventType: PkiAlertEventType): { label: string; color: string; summaryPrefix: string } => {
+  switch (eventType) {
+    case PkiAlertEventType.ISSUANCE:
+      return { label: "Certificate Issuance", color: "#2ea44f", summaryPrefix: "newly issued" };
+    case PkiAlertEventType.RENEWAL:
+      return { label: "Certificate Renewal", color: "#1f6feb", summaryPrefix: "recently renewed" };
+    case PkiAlertEventType.REVOCATION:
+      return { label: "Certificate Revocation", color: "#da3633", summaryPrefix: "revoked" };
+    case PkiAlertEventType.EXPIRATION:
+    default:
+      return { label: "Certificate Expiration", color: "#f0b429", summaryPrefix: "expiring" };
+  }
+};
+
 export const buildSlackPayload = ({
   alert,
   certificates,
+  eventType,
   appUrl = "https://app.infisical.com"
 }: TBuildSlackPayloadParams): TSlackPayload => {
   const totalCertificates = certificates.length;
   const now = new Date();
+  const { label, color, summaryPrefix } = getSlackEventConfig(eventType);
 
   // Sort certificates by urgency (days until expiry, ascending - most urgent first)
   const sortedCertificates = [...certificates].sort((a, b) => {
@@ -95,10 +98,10 @@ export const buildSlackPayload = ({
 
   const viewUrl = `${appUrl}/projects/cert-manager/${alert.projectId}/policies`;
 
-  const headerText = `Certificate Expiration Alert: ${alert.name}`;
+  const headerText = `${label} Alert: ${alert.name}`;
 
   // Fallback text for notifications
-  const fallbackText = `${headerText} - ${totalCertificates} certificate(s) expiring`;
+  const fallbackText = `${headerText} - ${totalCertificates} certificate(s) ${summaryPrefix}`;
 
   // Build header block
   const headerBlock: TSlackBlock = {
@@ -113,18 +116,24 @@ export const buildSlackPayload = ({
     const notAfter = new Date(cert.notAfter);
     const daysUntilExpiry = Math.ceil((notAfter.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 
-    certificateBlocks.push({
-      type: "section",
-      fields: [
-        { type: "mrkdwn", text: `*Common Name:*\n${cert.commonName || "N/A"}` },
-        { type: "mrkdwn", text: `*Serial:*\n\`${cert.serialNumber}\`` },
-        {
-          type: "mrkdwn",
-          text: `*Expires:*\n${notAfter.toISOString().split("T")[0]}`
-        },
-        { type: "mrkdwn", text: `*Days Until Expiry:*\n${daysUntilExpiry}` }
-      ]
-    });
+    const fields: Array<{ type: "mrkdwn"; text: string }> = [
+      { type: "mrkdwn", text: `*Common Name:*\n${cert.commonName || "N/A"}` },
+      { type: "mrkdwn", text: `*Serial:*\n\`${cert.serialNumber}\`` },
+      {
+        type: "mrkdwn",
+        text: `*Expires:*\n${notAfter.toISOString().split("T")[0]}`
+      },
+      { type: "mrkdwn", text: `*Days Until Expiry:*\n${daysUntilExpiry}` }
+    ];
+
+    if (eventType === PkiAlertEventType.REVOCATION) {
+      const reason = getRevocationReasonLabel(cert.revocationReason);
+      if (reason) {
+        fields.push({ type: "mrkdwn", text: `*Revocation Reason:*\n${reason}` });
+      }
+    }
+
+    certificateBlocks.push({ type: "section", fields });
 
     // Add divider between certificates (but not after the last one)
     if (displayCertificates.indexOf(cert) < displayCertificates.length - 1) {
@@ -133,24 +142,20 @@ export const buildSlackPayload = ({
   }
 
   // Build attachment blocks (colored sidebar)
+  const alertInfoFields = [{ type: "mrkdwn" as const, text: `*Alert Name:*\n${alert.name}` }];
+  if (alert.alertBefore) {
+    alertInfoFields.push({ type: "mrkdwn" as const, text: `*Alert Before:*\n${alert.alertBefore}` });
+  }
+
+  const summaryText =
+    eventType === PkiAlertEventType.EXPIRATION && alert.alertBefore
+      ? `*${totalCertificates}* certificate(s) expiring within *${alert.alertBefore}*`
+      : `*${totalCertificates}* certificate(s) ${summaryPrefix}`;
+
   const attachmentBlocks: TSlackBlock[] = [
-    // Alert info section
-    {
-      type: "section",
-      fields: [
-        { type: "mrkdwn", text: `*Alert Name:*\n${alert.name}` },
-        { type: "mrkdwn", text: `*Alert Before:*\n${alert.alertBefore}` }
-      ]
-    },
+    { type: "section", fields: alertInfoFields },
     { type: "divider" },
-    // Summary section
-    {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: `*${totalCertificates}* certificate(s) expiring within *${alert.alertBefore}*`
-      }
-    },
+    { type: "section", text: { type: "mrkdwn", text: summaryText } },
     ...certificateBlocks
   ];
 
@@ -178,12 +183,7 @@ export const buildSlackPayload = ({
   return {
     text: fallbackText,
     blocks: [headerBlock],
-    attachments: [
-      {
-        color: "#f0b429", // Warning yellow
-        blocks: attachmentBlocks
-      }
-    ]
+    attachments: [{ color, blocks: attachmentBlocks }]
   };
 };
 
@@ -205,7 +205,11 @@ const triggerSlackWebhook = async (url: string, payload: TSlackPayload): Promise
   });
 };
 
-const triggerSlackWebhookWithRetry = async (url: string, payload: TSlackPayload): Promise<TChannelResult> => {
+const triggerSlackWebhookWithRetry = async (
+  url: string,
+  payload: TSlackPayload,
+  channelId: string
+): Promise<TChannelResult> => {
   const { maxRetries, delayMs } = PKI_ALERT_RETRY_CONFIG;
   let lastError: AxiosError | undefined;
 
@@ -219,7 +223,7 @@ const triggerSlackWebhookWithRetry = async (url: string, payload: TSlackPayload)
 
       if (!isSlackErrorRetryable(lastError)) {
         logger.info(
-          { url: maskSlackWebhookUrl(url), statusCode: lastError.response?.status, error: lastError.message },
+          { channelId, statusCode: lastError.response?.status, error: lastError.message },
           "Slack webhook error is not retryable (4xx or non-transient error)"
         );
         return { success: false, error: lastError.message };
@@ -227,7 +231,7 @@ const triggerSlackWebhookWithRetry = async (url: string, payload: TSlackPayload)
 
       logger.info(
         {
-          url: maskSlackWebhookUrl(url),
+          channelId,
           attempt,
           maxRetries,
           statusCode: lastError.response?.status,
@@ -257,7 +261,9 @@ const triggerSlackWebhookWithRetry = async (url: string, payload: TSlackPayload)
 export const sendSlackNotificationWithRetry = async (
   config: TSlackChannelConfig,
   alertData: TAlertInfo,
-  matchingCertificates: TCertificatePreview[]
+  matchingCertificates: TCertificatePreview[],
+  channelId: string,
+  eventType: PkiAlertEventType = PkiAlertEventType.EXPIRATION
 ): Promise<TChannelResult> => {
   await validateSlackWebhookUrl(config.webhookUrl);
 
@@ -265,8 +271,9 @@ export const sendSlackNotificationWithRetry = async (
   const payload = buildSlackPayload({
     alert: alertData,
     certificates: matchingCertificates,
+    eventType,
     appUrl: appCfg.SITE_URL
   });
 
-  return triggerSlackWebhookWithRetry(config.webhookUrl, payload);
+  return triggerSlackWebhookWithRetry(config.webhookUrl, payload, channelId);
 };

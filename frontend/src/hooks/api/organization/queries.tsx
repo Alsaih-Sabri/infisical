@@ -4,6 +4,8 @@ import { apiRequest } from "@app/config/request";
 import { OrderByDirection } from "@app/hooks/api/generic/types";
 
 import { TGroupOrgMembership } from "../groups/types";
+import { getAuthToken } from "../reactQuery";
+import { TOrgRole } from "../roles/types";
 import { IntegrationAuth } from "../types";
 import {
   BillingDetails,
@@ -21,8 +23,14 @@ import {
   UpdateOrgDTO
 } from "./types";
 
+export type TOrgWithSubOrgs = Organization & {
+  userJoinedAt?: string | null;
+  subOrganizations: { id: string; name: string; slug: string; userJoinedAt?: string | null }[];
+};
+
 export const organizationKeys = {
   getUserOrganizations: ["organization"] as const,
+  getUserOrganizationsWithSubOrgs: ["organization", "with-sub-orgs"] as const,
   getOrgPlanBillingInfo: (orgId: string) => [{ orgId }, "organization-plan-billing"] as const,
   getOrgPlanTable: (orgId: string) => [{ orgId }, "organization-plan-table"] as const,
   getOrgPlansTable: (orgId: string, billingCycle: "monthly" | "yearly") =>
@@ -60,6 +68,28 @@ export const useGetOrganizations = () => {
     queryFn: async () => {
       return fetchOrganizations();
     }
+  });
+};
+
+export const fetchOrganizationsWithSubOrgs = async () => {
+  // prioritize auth token
+  const authToken = getAuthToken();
+
+  const {
+    data: { organizations }
+  } = await apiRequest.get<{ organizations: TOrgWithSubOrgs[] }>(
+    "/api/v1/organization/accessible-with-sub-orgs",
+    {
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined
+    }
+  );
+  return organizations;
+};
+
+export const useGetOrganizationsWithSubOrgs = () => {
+  return useQuery({
+    queryKey: organizationKeys.getUserOrganizationsWithSubOrgs,
+    queryFn: fetchOrganizationsWithSubOrgs
   });
 };
 
@@ -547,18 +577,68 @@ export const useDeleteOrgById = () => {
   });
 };
 
+type OrgGroupMembershipResponse = {
+  groupMemberships: Array<{
+    id: string;
+    groupId: string;
+    group: { id: string; name: string; slug: string; orgId?: string };
+    roles: Array<{
+      id: string;
+      role: string;
+      customRoleId?: string | null;
+      customRoleName?: string | null;
+      customRoleSlug?: string | null;
+      permissions?: unknown;
+      description?: string | null;
+    }>;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  totalCount: number;
+};
+
+function mapOrgMembershipToGroup(
+  m: OrgGroupMembershipResponse["groupMemberships"][0]
+): TGroupOrgMembership {
+  const firstRole = m.roles[0];
+  return {
+    id: m.group.id,
+    name: m.group.name,
+    slug: m.group.slug,
+    orgId: m.group.orgId ?? "",
+    createdAt: m.createdAt,
+    updatedAt: m.updatedAt,
+    role: firstRole?.role ?? "member",
+    roleId: firstRole?.id ?? "",
+    ...(firstRole?.role === "custom" &&
+      firstRole.customRoleSlug && {
+        customRole: {
+          id: firstRole.customRoleId ?? "",
+          name: firstRole.customRoleName ?? "",
+          slug: firstRole.customRoleSlug,
+          orgId: "",
+          createdAt: m.createdAt,
+          updatedAt: m.updatedAt,
+          permissions: (firstRole.permissions as TOrgRole["permissions"]) ?? [],
+          description: firstRole.description ?? undefined
+        } as TOrgRole
+      })
+  };
+}
+
 export const useGetOrganizationGroups = (organizationId: string) => {
   return useQuery({
     queryKey: organizationKeys.getOrgGroups(organizationId),
     enabled: Boolean(organizationId),
     queryFn: async () => {
       const {
-        data: { groups }
-      } = await apiRequest.get<{ groups: TGroupOrgMembership[] }>(
-        `/api/v1/organization/${organizationId}/groups`
+        data: { groupMemberships }
+      } = await apiRequest.get<OrgGroupMembershipResponse>(
+        "/api/v1/organizations/memberships/groups",
+        { params: { limit: 100 } }
       );
 
-      return groups;
+      return groupMemberships.map(mapOrgMembershipToGroup);
     }
   });
 };
@@ -586,7 +666,13 @@ export const useGetAvailableOrgUsers = (enabled = true) =>
     queryKey: organizationKeys.getAvailableUsers(),
     queryFn: async () => {
       const { data } = await apiRequest.get<{
-        users: { username: string; id: string; firstName: string; lastName: string }[];
+        users: {
+          username: string;
+          id: string;
+          email?: string | null;
+          firstName: string;
+          lastName: string;
+        }[];
       }>("/api/v1/organization/users/available");
 
       return data.users;

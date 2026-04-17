@@ -1,4 +1,7 @@
+export type { TOrgWithSubOrgs } from "./queries";
 export {
+  fetchOrganizationsWithSubOrgs,
+  organizationKeys,
   useAddOrgPmtMethod,
   useAddOrgTaxId,
   useCreateCustomerPortalSession,
@@ -9,6 +12,7 @@ export {
   useGetIdentityMembershipOrgs,
   useGetOrganizationGroups,
   useGetOrganizations,
+  useGetOrganizationsWithSubOrgs,
   useGetOrgBillingDetails,
   useGetOrgIntegrationAuths,
   useGetOrgInvoices,

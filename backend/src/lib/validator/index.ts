@@ -1,4 +1,5 @@
-export { isDisposableEmail } from "./validate-email";
+export { matchesAllowedEmailDomain } from "./email-domain-matcher";
+export { isDisposableEmail, isValidEmailDomain, sanitizeEmail, validateEmail } from "./validate-email";
 export { isValidFolderName, isValidSecretPath } from "./validate-folder-name";
 export {
   containsDangerousSmbChars,
@@ -9,5 +10,5 @@ export {
   validateSmbPassword,
   validateWindowsUsername
 } from "./validate-smb";
-export { blockLocalAndPrivateIpAddresses } from "./validate-url";
+export { blockLocalAndPrivateIpAddresses, ssrfSafeGet, ssrfSafePost, validateSsrfUrl } from "./validate-url";
 export { isUuidV4 } from "./validate-uuid";

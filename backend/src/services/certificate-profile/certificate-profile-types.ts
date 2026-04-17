@@ -4,10 +4,18 @@ import {
   TPkiCertificateProfilesUpdate
 } from "@app/db/schemas/pki-certificate-profiles";
 
+import {
+  CertExtendedKeyUsageType,
+  CertKeyAlgorithm,
+  CertKeyUsageType,
+  CertSignatureAlgorithm
+} from "../certificate-common/certificate-constants";
+
 export enum EnrollmentType {
   API = "api",
   EST = "est",
-  ACME = "acme"
+  ACME = "acme",
+  SCEP = "scep"
 }
 
 export enum IssuerType {
@@ -15,28 +23,49 @@ export enum IssuerType {
   SELF_SIGNED = "self-signed"
 }
 
-export type TCertificateProfile = Omit<TPkiCertificateProfiles, "enrollmentType" | "issuerType" | "externalConfigs"> & {
+export type TCertificateProfileDefaults = {
+  ttlDays?: number;
+  commonName?: string;
+  keyAlgorithm?: CertKeyAlgorithm;
+  signatureAlgorithm?: CertSignatureAlgorithm;
+  keyUsages?: CertKeyUsageType[];
+  extendedKeyUsages?: CertExtendedKeyUsageType[];
+  basicConstraints?: { isCA: boolean; pathLength?: number };
+  organization?: string;
+  organizationalUnit?: string;
+  country?: string;
+  state?: string;
+  locality?: string;
+};
+
+export type TCertificateProfile = Omit<
+  TPkiCertificateProfiles,
+  "enrollmentType" | "issuerType" | "externalConfigs" | "defaults"
+> & {
   enrollmentType: EnrollmentType;
   issuerType: IssuerType;
   externalConfigs?: Record<string, unknown> | null;
+  defaults?: TCertificateProfileDefaults | null;
 };
 
 export type TCertificateProfileInsert = Omit<
   TPkiCertificateProfilesInsert,
-  "enrollmentType" | "issuerType" | "externalConfigs"
+  "enrollmentType" | "issuerType" | "externalConfigs" | "defaults"
 > & {
   enrollmentType: EnrollmentType;
   issuerType: IssuerType;
   externalConfigs?: Record<string, unknown> | null;
+  defaults?: TCertificateProfileDefaults | null;
 };
 
 export type TCertificateProfileUpdate = Omit<
   TPkiCertificateProfilesUpdate,
-  "enrollmentType" | "issuerType" | "externalConfigs"
+  "enrollmentType" | "issuerType" | "externalConfigs" | "defaults"
 > & {
   enrollmentType?: EnrollmentType;
   issuerType?: IssuerType;
   externalConfigs?: Record<string, unknown> | null;
+  defaults?: TCertificateProfileDefaults | null;
   estConfig?: {
     disableBootstrapCaValidation?: boolean;
     passphrase?: string;
@@ -49,6 +78,14 @@ export type TCertificateProfileUpdate = Omit<
   acmeConfig?: {
     skipDnsOwnershipVerification?: boolean;
     skipEabBinding?: boolean;
+  };
+  scepConfig?: {
+    challengeType?: string;
+    challengePassword?: string;
+    includeCaCertInResponse?: boolean;
+    allowCertBasedRenewal?: boolean;
+    dynamicChallengeExpiryMinutes?: number;
+    dynamicChallengeMaxPending?: number;
   };
 };
 
@@ -88,6 +125,18 @@ export type TCertificateProfileWithConfigs = TCertificateProfile & {
     encryptedEabSecret?: Buffer;
     skipDnsOwnershipVerification?: boolean;
     skipEabBinding?: boolean;
+  };
+  scepConfig?: {
+    id: string;
+    scepEndpointUrl: string;
+    raCertificatePem: string;
+    raCertExpiresAt: Date;
+    includeCaCertInResponse: boolean;
+    allowCertBasedRenewal: boolean;
+    challengeType: string;
+    challengeEndpointUrl?: string;
+    dynamicChallengeExpiryMinutes?: number;
+    dynamicChallengeMaxPending?: number;
   };
 };
 

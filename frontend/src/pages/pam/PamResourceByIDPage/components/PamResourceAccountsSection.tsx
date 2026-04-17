@@ -1,19 +1,32 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { faFilter, faMagnifyingGlass } from "@fortawesome/free-solid-svg-icons";
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { format, formatDistance } from "date-fns";
+import { formatDistance } from "date-fns";
 import {
   CheckIcon,
   CopyIcon,
   EllipsisVerticalIcon,
+  InfoIcon,
+  KeyRoundIcon,
   LogInIcon,
   PencilIcon,
   PlusIcon,
   RefreshCwIcon,
   TrashIcon
 } from "lucide-react";
+import { twMerge } from "tailwind-merge";
 
 import { createNotification } from "@app/components/notifications";
 import { ProjectPermissionCan } from "@app/components/permissions";
+import {
+  Button as V2Button,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+  IconButton as V2IconButton,
+  Input as V2Input
+} from "@app/components/v2";
 import {
   Badge,
   Button,
@@ -37,9 +50,22 @@ import {
 } from "@app/components/v3";
 import { ProjectPermissionSub, useOrganization } from "@app/context";
 import { ProjectPermissionPamAccountActions } from "@app/context/ProjectPermissionContext/types";
-import { usePopUp, useToggle } from "@app/hooks";
+import { useDebounce, usePopUp, useToggle } from "@app/hooks";
 import { ApprovalPolicyType, useCheckPolicyMatch } from "@app/hooks/api/approvalPolicies";
-import { PamResourceType, TPamAccount, TPamResource, useListPamAccounts } from "@app/hooks/api/pam";
+import {
+  PamAccountRotationStatus,
+  PamResourceType,
+  TActiveDirectoryAccount,
+  TPamAccount,
+  TPamResource,
+  TWindowsAccount,
+  useListPamAccounts
+} from "@app/hooks/api/pam";
+import { useManualRotateAccount } from "@app/hooks/api/pam/mutations";
+import {
+  MetadataFilterEntry,
+  MetadataFilterSection
+} from "@app/pages/cert-manager/components/MetadataFilterSection";
 
 import { PamAccessAccountModal } from "../../PamAccountsPage/components/PamAccessAccountModal";
 import { PamAddAccountModal } from "../../PamAccountsPage/components/PamAddAccountModal";
@@ -52,6 +78,22 @@ type Props = {
   resource: TPamResource;
 };
 
+const hasAccountType = (resourceType: PamResourceType) =>
+  resourceType === PamResourceType.Windows || resourceType === PamResourceType.ActiveDirectory;
+
+const hasAccountsWithDependencies = (resourceType: PamResourceType) =>
+  resourceType === PamResourceType.Windows || resourceType === PamResourceType.ActiveDirectory;
+
+const getAccountType = (account: TPamAccount): string | undefined => {
+  if (account.resource.resourceType === PamResourceType.Windows) {
+    return (account as TWindowsAccount).internalMetadata?.accountType;
+  }
+  if (account.resource.resourceType === PamResourceType.ActiveDirectory) {
+    return (account as TActiveDirectoryAccount).internalMetadata?.accountType;
+  }
+  return undefined;
+};
+
 export const PamResourceAccountsSection = ({ resource }: Props) => {
   const navigate = useNavigate();
   const { currentOrg } = useOrganization();
@@ -60,6 +102,14 @@ export const PamResourceAccountsSection = ({ resource }: Props) => {
 
   const { accessAwsIam, loadingAccountId } = useAccessAwsIamAccount();
   const { mutateAsync: checkPolicyMatch } = useCheckPolicyMatch();
+  const manualRotate = useManualRotateAccount();
+
+  const [search, setSearch] = useState("");
+  const [debouncedSearch] = useDebounce(search);
+  const [rotatingAccountIds, setRotatingAccountIds] = useState<Set<string>>(new Set());
+
+  const [pendingMetadataEntries, setPendingMetadataEntries] = useState<MetadataFilterEntry[]>([]);
+  const [appliedMetadataEntries, setAppliedMetadataEntries] = useState<MetadataFilterEntry[]>([]);
 
   const { popUp, handlePopUpOpen, handlePopUpToggle } = usePopUp([
     "addAccount",
@@ -69,13 +119,63 @@ export const PamResourceAccountsSection = ({ resource }: Props) => {
     "deleteAccount"
   ] as const);
 
-  const { data: accountsData, isPending } = useListPamAccounts({
-    projectId: projectId!,
-    filterResourceIds: resource.id
-  });
+  const isTableFiltered = Boolean(appliedMetadataEntries.some((e) => e.key.trim()));
+
+  const hasFilterChanges = useMemo(() => {
+    return JSON.stringify(pendingMetadataEntries) !== JSON.stringify(appliedMetadataEntries);
+  }, [pendingMetadataEntries, appliedMetadataEntries]);
+
+  const handleApplyFilters = () => {
+    setAppliedMetadataEntries(pendingMetadataEntries);
+  };
+
+  const handleClearFilters = () => {
+    setPendingMetadataEntries([]);
+    setAppliedMetadataEntries([]);
+  };
+
+  const hasRotatingAccounts = rotatingAccountIds.size > 0;
+
+  const { data: accountsData, isPending } = useListPamAccounts(
+    {
+      projectId: projectId!,
+      filterResourceIds: resource.id,
+      search: debouncedSearch || undefined,
+      metadataFilter: appliedMetadataEntries.filter((e) => e.key.trim()).length
+        ? appliedMetadataEntries
+            .filter((e) => e.key.trim())
+            .map((e) => ({
+              key: e.key.trim(),
+              ...(e.value.trim() ? { value: e.value.trim() } : {})
+            }))
+        : undefined
+    },
+    {
+      refetchInterval: hasRotatingAccounts ? 3000 : false
+    }
+  );
 
   const accounts = accountsData?.accounts || [];
-  const folderPaths = accountsData?.folderPaths || {};
+
+  // Clear optimistic rotating state when server confirms a non-rotating status
+  useEffect(() => {
+    if (!accountsData?.accounts) return;
+    setRotatingAccountIds((prev) => {
+      const next = new Set(prev);
+      let changed = false;
+      [...prev].forEach((id) => {
+        const acct = accountsData.accounts.find((a) => a.id === id);
+        if (acct) {
+          const status = (acct as { rotationStatus?: string | null }).rotationStatus;
+          if (status && status !== PamAccountRotationStatus.Rotating) {
+            next.delete(id);
+            changed = true;
+          }
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [accountsData]);
 
   const [copiedAccountId, setCopiedAccountId] = useToggle(false);
 
@@ -107,30 +207,61 @@ export const PamResourceAccountsSection = ({ resource }: Props) => {
     });
   };
 
-  const accessAccount = async (account: TPamAccount) => {
-    let fullAccountPath = `/${account.name}`;
-    const folderPath = account.folderId ? folderPaths[account.folderId] : undefined;
-    if (folderPath) {
-      fullAccountPath = `${folderPath}/${account.name}`;
-    }
+  const handleRotateAccount = async (accountId: string) => {
+    try {
+      setRotatingAccountIds((prev) => new Set(prev).add(accountId));
+      const updatedAccount = await manualRotate.mutateAsync({ accountId });
 
+      // Clear from local rotating state since we now have the final status
+      setRotatingAccountIds((prev) => {
+        const next = new Set(prev);
+        next.delete(accountId);
+        return next;
+      });
+
+      if (updatedAccount.rotationStatus === PamAccountRotationStatus.Success) {
+        createNotification({ text: "Credential rotation completed successfully", type: "success" });
+      } else if (updatedAccount.rotationStatus === PamAccountRotationStatus.PartialSuccess) {
+        createNotification({
+          text: "Credential rotation completed with warnings",
+          type: "warning"
+        });
+      } else if (updatedAccount.rotationStatus === PamAccountRotationStatus.Failed) {
+        createNotification({ text: "Credential rotation failed", type: "error" });
+      }
+    } catch {
+      setRotatingAccountIds((prev) => {
+        const next = new Set(prev);
+        next.delete(accountId);
+        return next;
+      });
+      createNotification({ text: "Failed to trigger rotation", type: "error" });
+    }
+  };
+
+  const accessAccount = async (account: TPamAccount) => {
     const { requiresApproval } = await checkPolicyMatch({
       policyType: ApprovalPolicyType.PamAccess,
       projectId: projectId!,
       inputs: {
-        accountPath: fullAccountPath
+        resourceName: resource.name,
+        accountName: account.name
       }
     });
 
     if (requiresApproval) {
-      handlePopUpOpen("requestAccount", { accountPath: fullAccountPath, accountAccessed: true });
+      handlePopUpOpen("requestAccount", {
+        resourceName: resource.name,
+        accountName: account.name,
+        accountAccessed: true
+      });
       return;
     }
 
     if (account.resource.resourceType === PamResourceType.AwsIam) {
-      accessAwsIam(account, fullAccountPath);
+      accessAwsIam(account);
     } else {
-      handlePopUpOpen("accessAccount", { account, accountPath: folderPath });
+      handlePopUpOpen("accessAccount", { account });
     }
   };
 
@@ -161,29 +292,111 @@ export const PamResourceAccountsSection = ({ resource }: Props) => {
         </ProjectPermissionCan>
       </div>
       <div className="p-4">
+        <div className="mb-4 flex gap-2">
+          <V2Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            leftIcon={<FontAwesomeIcon icon={faMagnifyingGlass} />}
+            placeholder="Search accounts..."
+            className="flex-1"
+          />
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <V2IconButton
+                ariaLabel="Filter accounts"
+                variant="plain"
+                size="sm"
+                className={twMerge(
+                  "flex h-10 w-11 items-center justify-center overflow-hidden border border-mineshaft-600 bg-mineshaft-800 p-0 transition-all hover:border-primary/60 hover:bg-primary/10",
+                  isTableFiltered && "border-primary/50 text-primary"
+                )}
+              >
+                <FontAwesomeIcon icon={faFilter} />
+              </V2IconButton>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              sideOffset={2}
+              className="max-h-[70vh] thin-scrollbar w-80 overflow-y-auto p-4"
+              align="end"
+            >
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-medium text-mineshaft-100">Filters</h3>
+                  <span className="text-xs text-bunker-300">
+                    {isTableFiltered && (
+                      <button
+                        type="button"
+                        onClick={handleClearFilters}
+                        className="cursor-pointer text-primary hover:text-primary-600"
+                      >
+                        Clear filters
+                      </button>
+                    )}
+                  </span>
+                </div>
+
+                <MetadataFilterSection
+                  entries={pendingMetadataEntries}
+                  onChange={setPendingMetadataEntries}
+                />
+
+                <div className="pt-2">
+                  <V2Button
+                    onClick={handleApplyFilters}
+                    className="w-full bg-primary font-medium text-black hover:bg-primary-600"
+                    size="sm"
+                    isDisabled={!hasFilterChanges}
+                  >
+                    Apply Filters
+                  </V2Button>
+                </div>
+              </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
         <UnstableTable>
           <UnstableTableHeader>
             <UnstableTableRow>
               <UnstableTableHead>Account Name</UnstableTableHead>
-              <UnstableTableHead>Rotation</UnstableTableHead>
-              <UnstableTableHead>Created</UnstableTableHead>
+              {hasAccountsWithDependencies(resource.resourceType) && (
+                <UnstableTableHead>Dependencies</UnstableTableHead>
+              )}
+              {hasAccountType(resource.resourceType) && <UnstableTableHead>Type</UnstableTableHead>}
+              <UnstableTableHead>Last Rotated</UnstableTableHead>
               <UnstableTableHead className="w-5" />
             </UnstableTableRow>
           </UnstableTableHeader>
           <UnstableTableBody>
             {isPending && (
               <UnstableTableRow>
-                <UnstableTableCell colSpan={4} className="text-center text-muted">
+                <UnstableTableCell
+                  colSpan={
+                    3 +
+                    (hasAccountType(resource.resourceType) ? 1 : 0) +
+                    (hasAccountsWithDependencies(resource.resourceType) ? 1 : 0)
+                  }
+                  className="text-center text-muted"
+                >
                   Loading accounts...
                 </UnstableTableCell>
               </UnstableTableRow>
             )}
             {!isPending && accounts.length === 0 && (
               <UnstableTableRow>
-                <UnstableTableCell colSpan={4}>
+                <UnstableTableCell
+                  colSpan={
+                    3 +
+                    (hasAccountType(resource.resourceType) ? 1 : 0) +
+                    (hasAccountsWithDependencies(resource.resourceType) ? 1 : 0)
+                  }
+                >
                   <UnstableEmpty className="border-0 bg-transparent py-8 shadow-none">
                     <UnstableEmptyHeader>
-                      <UnstableEmptyTitle>No accounts found</UnstableEmptyTitle>
+                      <UnstableEmptyTitle>
+                        {debouncedSearch || isTableFiltered
+                          ? "No accounts match your search"
+                          : "No accounts found"}
+                      </UnstableEmptyTitle>
                     </UnstableEmptyHeader>
                   </UnstableEmpty>
                 </UnstableTableCell>
@@ -191,12 +404,12 @@ export const PamResourceAccountsSection = ({ resource }: Props) => {
             )}
             {accounts.map((account) => {
               const isAwsIamAccount = resource.resourceType === PamResourceType.AwsIam;
-              const rotationEnabled = !isAwsIamAccount
-                ? (account as { rotationEnabled?: boolean }).rotationEnabled
-                : undefined;
-              const rotationStatus = !isAwsIamAccount
+              const serverRotationStatus = !isAwsIamAccount
                 ? (account as { rotationStatus?: string | null }).rotationStatus
                 : undefined;
+              const rotationStatus = rotatingAccountIds.has(account.id)
+                ? PamAccountRotationStatus.Rotating
+                : serverRotationStatus;
               const lastRotatedAt = !isAwsIamAccount
                 ? (account as { lastRotatedAt?: string | null }).lastRotatedAt
                 : undefined;
@@ -211,76 +424,113 @@ export const PamResourceAccountsSection = ({ resource }: Props) => {
                   onClick={() => handleAccountClick(account)}
                 >
                   <UnstableTableCell>
-                    <div className="flex flex-col">
-                      <div className="flex items-center gap-3">
-                        <span className="font-medium">{account.name}</span>
-                        {lastRotatedAt && (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Badge
-                                variant={rotationStatus === "failed" ? "danger" : "success"}
-                                className="text-xs"
-                              >
-                                <RefreshCwIcon className="size-3" />
-                                <span>
-                                  Rotated {formatDistance(new Date(), new Date(lastRotatedAt))} ago
-                                </span>
-                              </Badge>
-                            </TooltipTrigger>
-                            {lastRotationMessage && (
-                              <TooltipContent className="max-w-sm text-center">
-                                {lastRotationMessage}
-                              </TooltipContent>
+                    <div className="flex items-center gap-3">
+                      <Tooltip disableHoverableContent>
+                        <TooltipTrigger>
+                          <div className="flex items-center gap-1">
+                            <span>{account.name}</span>
+                            {account.description && (
+                              <InfoIcon className="mt-px size-3 text-muted" />
                             )}
-                          </Tooltip>
+                          </div>
+                        </TooltipTrigger>
+                        {account.description && (
+                          <TooltipContent side="top">{account.description}</TooltipContent>
                         )}
-                      </div>
-                      {account.description && (
+                      </Tooltip>
+
+                      {!account.credentialsConfigured && (
+                        <Badge variant="warning" className="text-xs">
+                          <KeyRoundIcon className="size-3" />
+                          <span>No password</span>
+                        </Badge>
+                      )}
+                    </div>
+                  </UnstableTableCell>
+                  {hasAccountsWithDependencies(resource.resourceType) && (
+                    <UnstableTableCell>
+                      <span className="text-muted">{account.dependencyCount ?? 0}</span>
+                    </UnstableTableCell>
+                  )}
+                  {hasAccountType(resource.resourceType) && (
+                    <UnstableTableCell>
+                      <span className="capitalize">{getAccountType(account) ?? "-"}</span>
+                    </UnstableTableCell>
+                  )}
+                  <UnstableTableCell>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted">
+                        {lastRotatedAt
+                          ? formatDistance(new Date(lastRotatedAt), new Date(), {
+                              addSuffix: true
+                            })
+                          : "Never"}
+                      </span>
+                      {rotationStatus === PamAccountRotationStatus.Failed && (
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <span className="line-clamp-1 text-xs text-muted">
-                              {account.description}
-                            </span>
+                            <Badge variant="danger" className="text-xs">
+                              Failed
+                            </Badge>
                           </TooltipTrigger>
-                          <TooltipContent>{account.description}</TooltipContent>
+                          {lastRotationMessage && (
+                            <TooltipContent className="max-w-sm">
+                              {lastRotationMessage}
+                            </TooltipContent>
+                          )}
                         </Tooltip>
+                      )}
+                      {rotationStatus === PamAccountRotationStatus.PartialSuccess && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Badge variant="warning" className="text-xs">
+                              Partial
+                            </Badge>
+                          </TooltipTrigger>
+                          {lastRotationMessage && (
+                            <TooltipContent className="max-w-sm">
+                              {lastRotationMessage}
+                            </TooltipContent>
+                          )}
+                        </Tooltip>
+                      )}
+                      {rotationStatus === PamAccountRotationStatus.Rotating && (
+                        <Badge variant="info" className="animate-pulse text-xs">
+                          Rotating
+                        </Badge>
+                      )}
+                      {rotationStatus === PamAccountRotationStatus.Success && (
+                        <Badge variant="success" className="text-xs">
+                          Success
+                        </Badge>
                       )}
                     </div>
                   </UnstableTableCell>
                   <UnstableTableCell>
-                    {isAwsIamAccount ? (
-                      <Badge variant="neutral" className="text-xs">
-                        N/A
-                      </Badge>
-                    ) : (
-                      <Badge variant={rotationEnabled ? "success" : "neutral"} className="text-xs">
-                        {rotationEnabled ? "Enabled" : "Disabled"}
-                      </Badge>
-                    )}
-                  </UnstableTableCell>
-                  <UnstableTableCell className="text-muted">
-                    {format(new Date(account.createdAt), "MM/dd/yyyy")}
-                  </UnstableTableCell>
-                  <UnstableTableCell>
                     <div className="flex items-center gap-2">
-                      <ProjectPermissionCan
-                        I={ProjectPermissionPamAccountActions.Access}
-                        a={ProjectPermissionSub.PamAccounts}
-                      >
-                        <Button
-                          variant="ghost"
-                          size="xs"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            accessAccount(account);
-                          }}
-                          isPending={loadingAccountId === account.id}
-                          isDisabled={loadingAccountId === account.id}
-                        >
-                          <LogInIcon />
-                          Connect
-                        </Button>
-                      </ProjectPermissionCan>
+                      {/* Temporarily disable accessing Windows Server accounts */}
+                      {/* Disable accessing Active Directory accounts */}
+                      {resource.resourceType !== PamResourceType.Windows &&
+                        resource.resourceType !== PamResourceType.ActiveDirectory && (
+                          <ProjectPermissionCan
+                            I={ProjectPermissionPamAccountActions.Access}
+                            a={ProjectPermissionSub.PamAccounts}
+                          >
+                            <Button
+                              variant="ghost"
+                              size="xs"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                accessAccount(account);
+                              }}
+                              isPending={loadingAccountId === account.id}
+                              isDisabled={loadingAccountId === account.id}
+                            >
+                              <LogInIcon />
+                              Connect
+                            </Button>
+                          </ProjectPermissionCan>
+                        )}
                       <UnstableDropdownMenu>
                         <UnstableDropdownMenuTrigger asChild>
                           <UnstableIconButton variant="ghost" size="xs">
@@ -301,6 +551,23 @@ export const PamResourceAccountsSection = ({ resource }: Props) => {
                             )}
                             Copy Account ID
                           </UnstableDropdownMenuItem>
+                          <ProjectPermissionCan
+                            I={ProjectPermissionPamAccountActions.TriggerRotation}
+                            a={ProjectPermissionSub.PamAccounts}
+                          >
+                            {(isAllowed: boolean) => (
+                              <UnstableDropdownMenuItem
+                                isDisabled={!isAllowed || manualRotate.isPending}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleRotateAccount(account.id);
+                                }}
+                              >
+                                <RefreshCwIcon className="size-4" />
+                                Rotate Account
+                              </UnstableDropdownMenuItem>
+                            )}
+                          </ProjectPermissionCan>
                           <ProjectPermissionCan
                             I={ProjectPermissionPamAccountActions.Edit}
                             a={ProjectPermissionSub.PamAccounts}
@@ -352,21 +619,21 @@ export const PamResourceAccountsSection = ({ resource }: Props) => {
         onOpenChange={(isOpen) => handlePopUpToggle("addAccount", isOpen)}
         projectId={projectId!}
         currentFolderId={null}
-        defaultResource={resource}
+        resource={resource}
       />
 
       <PamAccessAccountModal
         isOpen={popUp.accessAccount.isOpen}
         onOpenChange={(isOpen) => handlePopUpToggle("accessAccount", isOpen)}
         account={popUp.accessAccount.data?.account}
-        accountPath={popUp.accessAccount.data?.accountPath}
         projectId={projectId!}
       />
 
       <PamRequestAccountAccessModal
         isOpen={popUp.requestAccount.isOpen}
         onOpenChange={(isOpen) => handlePopUpToggle("requestAccount", isOpen)}
-        accountPath={popUp.requestAccount.data?.accountPath}
+        resourceName={popUp.requestAccount.data?.resourceName}
+        accountName={popUp.requestAccount.data?.accountName}
         accountAccessed={popUp.requestAccount.data?.accountAccessed}
       />
 

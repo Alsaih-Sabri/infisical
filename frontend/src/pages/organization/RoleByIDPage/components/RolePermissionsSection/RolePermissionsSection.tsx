@@ -18,6 +18,7 @@ import {
 import { OrgPermissionAdminConsoleRow } from "./OrgPermissionAdminConsoleRow";
 import { OrgPermissionAuditLogsRow } from "./OrgPermissionAuditLogsRow";
 import { OrgPermissionBillingRow } from "./OrgPermissionBillingRow";
+import { OrgPermissionEmailDomainRow } from "./OrgPermissionEmailDomainRow";
 import { OrgGatewayPermissionRow } from "./OrgPermissionGatewayRow";
 import { OrgPermissionGroupRow } from "./OrgPermissionGroupRow";
 import { OrgPermissionIdentityRow } from "./OrgPermissionIdentityRow";
@@ -25,6 +26,7 @@ import { OrgPermissionKmipRow } from "./OrgPermissionKmipRow";
 import { OrgPermissionMachineIdentityAuthTemplateRow } from "./OrgPermissionMachineIdentityAuthTemplateRow";
 import { OrgRelayPermissionRow } from "./OrgPermissionRelayRow";
 import { OrgPermissionSecretShareRow } from "./OrgPermissionSecretShareRow";
+import { OrgPermissionSsoRow } from "./OrgPermissionSsoRow";
 import { OrgPermissionSubOrgRow } from "./OrgPermissionSubOrgRow";
 import { OrgRoleWorkspaceRow } from "./OrgRoleWorkspaceRow";
 import { RolePermissionRow } from "./RolePermissionRow";
@@ -49,10 +51,6 @@ const SIMPLE_PERMISSION_OPTIONS = [
   {
     title: "Secret Scanning",
     formName: "secret-scanning"
-  },
-  {
-    title: "SSO",
-    formName: "sso"
   },
   {
     title: "LDAP",
@@ -174,6 +172,13 @@ export const RolePermissionsSection = ({ roleId }: Props) => {
                   />
                 );
               })}
+              {isRootOrganization && (
+                <OrgPermissionSsoRow
+                  control={control}
+                  setValue={setValue}
+                  isEditable={isCustomRole}
+                />
+              )}
               <OrgPermissionAuditLogsRow
                 control={control}
                 setValue={setValue}
@@ -211,6 +216,11 @@ export const RolePermissionsSection = ({ roleId }: Props) => {
                   isEditable={isCustomRole}
                 />
               )}
+              <OrgPermissionEmailDomainRow
+                control={control}
+                setValue={setValue}
+                isEditable={isCustomRole}
+              />
               <OrgPermissionSecretShareRow
                 control={control}
                 setValue={setValue}

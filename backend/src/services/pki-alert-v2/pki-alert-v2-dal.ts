@@ -45,7 +45,8 @@ export const pkiAlertV2DALFactory = (db: TDbClient) => {
     try {
       const serializedData = {
         ...data,
-        filters: data.filters ? JSON.stringify(data.filters) : null
+        filters: data.filters ? JSON.stringify(data.filters) : null,
+        notificationConfig: data.notificationConfig ? JSON.stringify(data.notificationConfig) : data.notificationConfig
       };
       const [res] = await (tx || db)(TableName.PkiAlertsV2).insert(serializedData).returning("*");
 
@@ -57,9 +58,17 @@ export const pkiAlertV2DALFactory = (db: TDbClient) => {
 
   const updateById = async (id: string, data: TPkiAlertsV2Update, tx?: Knex): Promise<TPkiAlertsV2> => {
     try {
+      let serializedNotificationConfig: unknown;
+      if (data.notificationConfig !== undefined) {
+        serializedNotificationConfig = data.notificationConfig
+          ? JSON.stringify(data.notificationConfig)
+          : data.notificationConfig;
+      }
+
       const serializedData: Record<string, unknown> = {
         ...data,
-        filters: data.filters !== undefined ? JSON.stringify(data.filters) : undefined
+        filters: data.filters !== undefined ? JSON.stringify(data.filters) : undefined,
+        notificationConfig: serializedNotificationConfig
       };
       Object.keys(serializedData).forEach((key) => {
         if (serializedData[key] === undefined) {
@@ -345,6 +354,7 @@ export const pkiAlertV2DALFactory = (db: TDbClient) => {
       showPreview?: boolean;
       excludeAlerted?: boolean;
       alertId?: string;
+      certificateId?: string;
     },
     tx?: Knex
   ): Promise<{ certificates: TCertificatePreview[]; total: number }> => {
@@ -390,7 +400,20 @@ export const pkiAlertV2DALFactory = (db: TDbClient) => {
       }
 
       let certCountQuery = (tx || db.replicaNode()).count("* as count").from(TableName.Certificate);
+
+      if (needsProfileJoin) {
+        certCountQuery = certCountQuery.leftJoin(
+          `${TableName.PkiCertificateProfile} as profile`,
+          `${TableName.Certificate}.profileId`,
+          "profile.id"
+        );
+      }
+
       certCountQuery = applyCertificateFilters(certCountQuery, filters, projectId) as typeof certCountQuery;
+
+      if (options?.certificateId) {
+        certCountQuery = certCountQuery.where(`${TableName.Certificate}.id`, options.certificateId);
+      }
 
       if (options?.showPreview) {
         certCountQuery = certCountQuery
@@ -414,6 +437,8 @@ export const pkiAlertV2DALFactory = (db: TDbClient) => {
             .whereNot(`${TableName.Certificate}.status`, "revoked");
         }
       }
+
+      certCountQuery = certCountQuery.whereNull(`${TableName.Certificate}.renewedByCertificateId`);
 
       if (options?.excludeAlerted && options?.alertId) {
         certCountQuery = certCountQuery.whereNotExists(
@@ -446,16 +471,27 @@ export const pkiAlertV2DALFactory = (db: TDbClient) => {
           `${TableName.Certificate}.notAfter`,
           `${TableName.Certificate}.status`,
           `${TableName.Certificate}.profileId`,
-          `${TableName.Certificate}.pkiSubscriberId`
+          `${TableName.Certificate}.pkiSubscriberId`,
+          `${TableName.Certificate}.revokedAt`,
+          `${TableName.Certificate}.revocationReason`
         ];
 
-        if (needsProfileJoin) {
-          selectColumns.push("profile.slug as profileName");
-        }
+        selectColumns.push("profile.slug as profileName");
 
-        let certificateQuery = (tx || db.replicaNode()).select(selectColumns).from(TableName.Certificate);
+        let certificateQuery = (tx || db.replicaNode())
+          .select(selectColumns)
+          .from(TableName.Certificate)
+          .leftJoin(
+            `${TableName.PkiCertificateProfile} as profile`,
+            `${TableName.Certificate}.profileId`,
+            "profile.id"
+          );
 
         certificateQuery = applyCertificateFilters(certificateQuery, filters, projectId) as typeof certificateQuery;
+
+        if (options?.certificateId) {
+          certificateQuery = certificateQuery.where(`${TableName.Certificate}.id`, options.certificateId);
+        }
 
         if (options?.showPreview) {
           certificateQuery = certificateQuery
@@ -479,6 +515,8 @@ export const pkiAlertV2DALFactory = (db: TDbClient) => {
               .whereNot(`${TableName.Certificate}.status`, "revoked");
           }
         }
+
+        certificateQuery = certificateQuery.whereNull(`${TableName.Certificate}.renewedByCertificateId`);
 
         if (options?.excludeAlerted && options?.alertId) {
           certificateQuery = certificateQuery.whereNotExists(
@@ -513,6 +551,8 @@ export const pkiAlertV2DALFactory = (db: TDbClient) => {
             notBefore: Date;
             notAfter: Date;
             status: string;
+            revokedAt?: Date | null;
+            revocationReason?: number | null;
           }>
         ).map((cert) => {
           let enrollmentType = CertificateOrigin.UNKNOWN;
@@ -531,7 +571,9 @@ export const pkiAlertV2DALFactory = (db: TDbClient) => {
             enrollmentType,
             notBefore: cert.notBefore,
             notAfter: cert.notAfter,
-            status: cert.status
+            status: cert.status,
+            revokedAt: cert.revokedAt,
+            revocationReason: cert.revocationReason
           };
         });
 

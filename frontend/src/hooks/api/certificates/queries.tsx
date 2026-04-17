@@ -3,9 +3,11 @@ import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@app/config/request";
 
 import {
+  TActivityTrendResponse,
   TCertificate,
   TCertificateByIdResponse,
   TCertificateRequestDetails,
+  TDashboardStats,
   TListCertificateRequestsParams,
   TListCertificateRequestsResponse
 } from "./types";
@@ -31,8 +33,12 @@ export const certKeys = {
     params.toDate,
     params.profileIds,
     params.sortBy,
-    params.sortOrder
-  ]
+    params.sortOrder,
+    params.metadataFilter
+  ],
+  getDashboardStats: (projectId: string) => ["cert-dashboard-stats", { projectId }] as const,
+  getActivityTrend: (projectId: string, range: string) =>
+    ["cert-activity-trend", { projectId }, { range }] as const
 };
 
 export const useGetCert = (serialNumber: string) => {
@@ -103,21 +109,20 @@ export const useListCertificateRequests = (params: TListCertificateRequestsParam
       const now = Date.now();
       const daysInMs = DATE_RANGE_DAYS * 24 * 60 * 60 * 1000;
 
-      const { data } = await apiRequest.get<TListCertificateRequestsResponse>(
-        "/api/v1/cert-manager/certificates/certificate-requests",
+      const { data } = await apiRequest.post<TListCertificateRequestsResponse>(
+        "/api/v1/cert-manager/certificates/certificate-requests/search",
         {
-          params: {
-            projectSlug: params.projectSlug,
-            offset: params.offset,
-            limit: params.limit,
-            search: params.search,
-            status: params.status,
-            fromDate: (params.fromDate || new Date(now - daysInMs)).toISOString(),
-            toDate: (params.toDate || new Date(now)).toISOString(),
-            profileIds: params.profileIds?.join(","),
-            sortBy: params.sortBy,
-            sortOrder: params.sortOrder
-          }
+          projectSlug: params.projectSlug,
+          offset: params.offset,
+          limit: params.limit,
+          search: params.search,
+          status: params.status,
+          fromDate: (params.fromDate || new Date(now - daysInMs)).toISOString(),
+          toDate: (params.toDate || new Date(now)).toISOString(),
+          ...(params.profileIds?.length && { profileIds: params.profileIds }),
+          sortBy: params.sortBy,
+          sortOrder: params.sortOrder,
+          ...(params.metadataFilter?.length && { metadata: params.metadataFilter })
         }
       );
       return data;
@@ -137,5 +142,36 @@ export const useGetCertificateRequest = (requestId: string, projectSlug: string)
       return data;
     },
     enabled: Boolean(requestId) && Boolean(projectSlug)
+  });
+};
+
+const DASHBOARD_STALE_TIME = 5 * 60 * 1000; // 5 minutes
+
+export const useGetCertDashboardStats = (projectId: string) => {
+  return useQuery({
+    queryKey: certKeys.getDashboardStats(projectId),
+    queryFn: async () => {
+      const { data } = await apiRequest.get<TDashboardStats>(
+        `/api/v1/projects/${projectId}/certificates/dashboard-stats`
+      );
+      return data;
+    },
+    enabled: Boolean(projectId),
+    staleTime: DASHBOARD_STALE_TIME
+  });
+};
+
+export const useGetCertActivityTrend = (projectId: string, range = "6m") => {
+  return useQuery({
+    queryKey: certKeys.getActivityTrend(projectId, range),
+    queryFn: async () => {
+      const { data } = await apiRequest.get<TActivityTrendResponse>(
+        `/api/v1/projects/${projectId}/certificates/activity-trend`,
+        { params: { range } }
+      );
+      return data;
+    },
+    enabled: Boolean(projectId),
+    staleTime: DASHBOARD_STALE_TIME
   });
 };

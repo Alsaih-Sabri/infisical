@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Controller, useFieldArray, useFormContext } from "react-hook-form";
 import { faSlack } from "@fortawesome/free-brands-svg-icons";
 import {
+  faBell,
   faCheck,
   faChevronDown,
   faEnvelope,
@@ -58,6 +59,7 @@ import {
   PkiFilterOperatorV2,
   TCreatePkiAlertV2,
   TPkiAlertChannelConfigEmail,
+  TPkiAlertChannelConfigPagerDuty,
   TPkiAlertChannelConfigSlack,
   TPkiAlertChannelConfigWebhook,
   TPkiFilterRuleV2,
@@ -68,6 +70,7 @@ import {
 import {
   formatAlertBefore,
   formatEventType,
+  getChannelDisplayName,
   getChannelIcon,
   getChannelSummary
 } from "../utils/pki-alert-formatters";
@@ -77,6 +80,7 @@ const MAX_CHANNELS = 10;
 interface CreatePkiAlertV2FormStepsProps {
   expandedChannel: string | undefined;
   setExpandedChannel: (channel: string | undefined) => void;
+  showPreview?: boolean;
 }
 
 type ChannelUIState = {
@@ -90,13 +94,15 @@ type ChannelUIState = {
 
 export const CreatePkiAlertV2FormSteps = ({
   expandedChannel,
-  setExpandedChannel
+  setExpandedChannel,
+  showPreview = true
 }: CreatePkiAlertV2FormStepsProps) => {
   const {
     control,
     watch,
     setValue,
     trigger,
+    clearErrors,
     formState: { errors }
   } = useFormContext<TCreatePkiAlertV2>();
   const { currentProject } = useProject();
@@ -125,17 +131,26 @@ export const CreatePkiAlertV2FormSteps = ({
   const watchedEventType = watch("eventType");
   const watchedAlertBefore = watch("alertBefore");
 
+  const previewEnabledTypes = [
+    PkiAlertEventTypeV2.EXPIRATION,
+    PkiAlertEventTypeV2.RENEWAL,
+    PkiAlertEventTypeV2.REVOCATION
+  ];
+  const isPreviewEnabled = !!currentProject?.id && previewEnabledTypes.includes(watchedEventType);
+
   const { data: currentCertificatesData, isLoading: isLoadingCurrentCertificates } =
     useGetPkiAlertV2CurrentMatchingCertificates(
       {
         projectId: currentProject?.id || "",
         filters: watchedFilters || [],
-        alertBefore: watchedAlertBefore || "30d",
+        ...(watchedEventType === PkiAlertEventTypeV2.EXPIRATION
+          ? { alertBefore: watchedAlertBefore || "30d" }
+          : {}),
         limit: certificatesPerPage,
         offset: (certificatesPage - 1) * certificatesPerPage
       },
       {
-        enabled: !!currentProject?.id && watchedEventType === PkiAlertEventTypeV2.EXPIRATION,
+        enabled: isPreviewEnabled,
         refetchOnWindowFocus: false
       }
     );
@@ -175,7 +190,8 @@ export const CreatePkiAlertV2FormSteps = ({
     let config:
       | TPkiAlertChannelConfigEmail
       | TPkiAlertChannelConfigWebhook
-      | TPkiAlertChannelConfigSlack;
+      | TPkiAlertChannelConfigSlack
+      | TPkiAlertChannelConfigPagerDuty;
     switch (type) {
       case PkiAlertChannelTypeV2.EMAIL:
         config = { recipients: [] };
@@ -186,6 +202,9 @@ export const CreatePkiAlertV2FormSteps = ({
       case PkiAlertChannelTypeV2.SLACK:
         config = { webhookUrl: "" };
         break;
+      case PkiAlertChannelTypeV2.PAGERDUTY:
+        config = { integrationKey: "" };
+        break;
       default:
         config = { recipients: [] };
     }
@@ -195,7 +214,7 @@ export const CreatePkiAlertV2FormSteps = ({
       config,
       enabled: true
     });
-    trigger("channels");
+    clearErrors("channels");
   };
 
   // Auto-expand newly added channel (prepended at index 0)
@@ -336,6 +355,13 @@ export const CreatePkiAlertV2FormSteps = ({
                     <SelectItem value={PkiAlertEventTypeV2.EXPIRATION}>
                       Certificate Expiration
                     </SelectItem>
+                    <SelectItem value={PkiAlertEventTypeV2.ISSUANCE}>
+                      Certificate Issuance
+                    </SelectItem>
+                    <SelectItem value={PkiAlertEventTypeV2.RENEWAL}>Certificate Renewal</SelectItem>
+                    <SelectItem value={PkiAlertEventTypeV2.REVOCATION}>
+                      Certificate Revocation
+                    </SelectItem>
                   </Select>
                 </FormControl>
               )}
@@ -379,6 +405,28 @@ export const CreatePkiAlertV2FormSteps = ({
                 >
                   <Input {...field} placeholder="30d" />
                 </FormControl>
+              )}
+            />
+          )}
+
+          {watchedEventType === PkiAlertEventTypeV2.EXPIRATION && (
+            <Controller
+              control={control}
+              name="notificationConfig.enableDailyNotification"
+              render={({ field }) => (
+                <div className="flex items-center justify-between">
+                  <div className="flex flex-col gap-1">
+                    <span className="text-sm text-bunker-300">Daily Alerts</span>
+                    <p className="text-xs text-bunker-400">
+                      Send notifications daily from the alert threshold until expiry
+                    </p>
+                  </div>
+                  <Switch
+                    id="daily-alerts"
+                    isChecked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </div>
               )}
             />
           )}
@@ -533,112 +581,108 @@ export const CreatePkiAlertV2FormSteps = ({
         </div>
       </Tab.Panel>
 
-      <Tab.Panel>
-        <div className="space-y-6">
-          <p className="mb-4 text-sm text-bunker-300">
-            Preview all certificates that match your filter criteria. This shows all non-expired
-            certificates that would be monitored by this alert.
-          </p>
+      {showPreview && (
+        <Tab.Panel>
+          <div className="space-y-6">
+            <p className="mb-4 text-sm text-bunker-300">
+              {watchedEventType === PkiAlertEventTypeV2.EXPIRATION &&
+                "Preview certificates that will expire within the configured alert window and match your filter criteria."}
+              {watchedEventType === PkiAlertEventTypeV2.RENEWAL &&
+                "Preview active certificates that match your filter criteria. When any of these certificates are renewed, this alert will trigger."}
+              {watchedEventType === PkiAlertEventTypeV2.REVOCATION &&
+                "Preview active certificates that match your filter criteria. When any of these certificates are revoked, this alert will trigger."}
+            </p>
 
-          <div className="space-y-4">
-            <TableContainer>
-              <Table>
-                <THead>
-                  <Tr>
-                    <Th className="w-1/2">SAN / CN</Th>
-                    <Th className="w-1/4">Not Before</Th>
-                    <Th className="w-1/4">Not After</Th>
-                  </Tr>
-                </THead>
-                <TBody>
-                  {(() => {
-                    if (watchedEventType !== PkiAlertEventTypeV2.EXPIRATION) {
+            <div className="space-y-4">
+              <TableContainer>
+                <Table>
+                  <THead>
+                    <Tr>
+                      <Th className="w-1/2">SAN / CN</Th>
+                      <Th className="w-1/4">Not Before</Th>
+                      <Th className="w-1/4">Not After</Th>
+                    </Tr>
+                  </THead>
+                  <TBody>
+                    {(() => {
+                      if (isLoadingCurrentCertificates) {
+                        return Array.from({ length: 5 }, (_, index) => (
+                          <Tr key={`skeleton-row-${index}`}>
+                            <Td>
+                              <Skeleton className="h-4 w-32" />
+                            </Td>
+                            <Td>
+                              <Skeleton className="h-4 w-24" />
+                            </Td>
+                            <Td>
+                              <Skeleton className="h-4 w-24" />
+                            </Td>
+                          </Tr>
+                        ));
+                      }
+
+                      if (currentCertificatesData?.certificates?.length) {
+                        return currentCertificatesData.certificates.map((cert) => (
+                          <Tr key={cert.id} className="group h-10">
+                            <Td className="max-w-0">
+                              <div className="flex items-center gap-2">
+                                <CertificateDisplayName
+                                  cert={{
+                                    altNames: cert.san?.join(", ") || null,
+                                    commonName: cert.commonName
+                                  }}
+                                  maxLength={48}
+                                  fallback="—"
+                                />
+                                {(cert.enrollmentType === "ca" ||
+                                  cert.enrollmentType === "internal-ca") && (
+                                  <Badge variant="info" className="shrink-0 text-xs">
+                                    CA
+                                  </Badge>
+                                )}
+                              </div>
+                            </Td>
+                            <Td>
+                              {cert.notBefore
+                                ? new Date(cert.notBefore).toLocaleDateString("en-CA")
+                                : "-"}
+                            </Td>
+                            <Td>
+                              {cert.notAfter
+                                ? new Date(cert.notAfter).toLocaleDateString("en-CA")
+                                : "-"}
+                            </Td>
+                          </Tr>
+                        ));
+                      }
+
                       return (
                         <Tr>
                           <Td colSpan={3} className="py-8 text-center text-gray-400">
-                            Preview is only available for Certificate Expiration alerts
+                            No certificates currently match this alert&apos;s criteria
                           </Td>
                         </Tr>
                       );
-                    }
+                    })()}
+                  </TBody>
+                </Table>
+              </TableContainer>
 
-                    if (isLoadingCurrentCertificates) {
-                      return Array.from({ length: 5 }, (_, index) => (
-                        <Tr key={`skeleton-row-${index}`}>
-                          <Td>
-                            <Skeleton className="h-4 w-32" />
-                          </Td>
-                          <Td>
-                            <Skeleton className="h-4 w-24" />
-                          </Td>
-                          <Td>
-                            <Skeleton className="h-4 w-24" />
-                          </Td>
-                        </Tr>
-                      ));
-                    }
-
-                    if (currentCertificatesData?.certificates?.length) {
-                      return currentCertificatesData.certificates.map((cert) => (
-                        <Tr key={cert.id} className="group h-10">
-                          <Td className="max-w-0">
-                            <div className="flex items-center gap-2">
-                              <CertificateDisplayName
-                                cert={{
-                                  altNames: cert.san?.join(", ") || null,
-                                  commonName: cert.commonName
-                                }}
-                                maxLength={48}
-                                fallback="—"
-                              />
-                              {(cert.enrollmentType === "ca" ||
-                                cert.enrollmentType === "internal-ca") && (
-                                <Badge variant="info" className="shrink-0 text-xs">
-                                  CA
-                                </Badge>
-                              )}
-                            </div>
-                          </Td>
-                          <Td>
-                            {cert.notBefore
-                              ? new Date(cert.notBefore).toLocaleDateString("en-CA")
-                              : "-"}
-                          </Td>
-                          <Td>
-                            {cert.notAfter
-                              ? new Date(cert.notAfter).toLocaleDateString("en-CA")
-                              : "-"}
-                          </Td>
-                        </Tr>
-                      ));
-                    }
-
-                    return (
-                      <Tr>
-                        <Td colSpan={3} className="py-8 text-center text-gray-400">
-                          No certificates currently match this alert&apos;s criteria
-                        </Td>
-                      </Tr>
-                    );
-                  })()}
-                </TBody>
-              </Table>
-            </TableContainer>
-
-            {(currentCertificatesData?.total || 0) > 0 && (
-              <div className="flex justify-center">
-                <Pagination
-                  count={currentCertificatesData?.total || 0}
-                  page={certificatesPage}
-                  onChangePage={setCertificatesPage}
-                  perPage={certificatesPerPage}
-                  onChangePerPage={() => {}}
-                />
-              </div>
-            )}
+              {(currentCertificatesData?.total || 0) > 0 && (
+                <div className="flex justify-center">
+                  <Pagination
+                    count={currentCertificatesData?.total || 0}
+                    page={certificatesPage}
+                    onChangePage={setCertificatesPage}
+                    perPage={certificatesPerPage}
+                    onChangePerPage={() => {}}
+                  />
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-      </Tab.Panel>
+        </Tab.Panel>
+      )}
 
       <Tab.Panel>
         <div className="flex min-h-[400px] flex-col gap-6">
@@ -673,6 +717,10 @@ export const CreatePkiAlertV2FormSteps = ({
                   <FontAwesomeIcon icon={faSlack} className="mr-2" />
                   Slack
                 </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => addChannel(PkiAlertChannelTypeV2.PAGERDUTY)}>
+                  <FontAwesomeIcon icon={faBell} className="mr-2" />
+                  PagerDuty
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -697,8 +745,8 @@ export const CreatePkiAlertV2FormSteps = ({
                             icon={getChannelIcon(channel?.channelType)}
                             className="shrink-0 text-mineshaft-300"
                           />
-                          <span className="shrink-0 text-sm font-medium capitalize">
-                            {channel?.channelType}
+                          <span className="shrink-0 text-sm font-medium">
+                            {channel?.channelType && getChannelDisplayName(channel.channelType)}
                           </span>
                           <span className="truncate text-xs text-mineshaft-400 group-data-[state=open]:hidden">
                             {channel && getChannelSummary(channel)}
@@ -872,6 +920,29 @@ export const CreatePkiAlertV2FormSteps = ({
                           )}
                         />
                       )}
+
+                      {channel?.channelType === PkiAlertChannelTypeV2.PAGERDUTY && (
+                        <Controller
+                          control={control}
+                          name={`channels.${index}.config.integrationKey`}
+                          render={({ field: keyField, fieldState: { error } }) => (
+                            <FormControl
+                              label="Integration Key"
+                              isRequired
+                              isError={Boolean(error)}
+                              errorText={error?.message}
+                              helperText="Find this in PagerDuty under Services → Integrations → Events API v2"
+                            >
+                              <Input
+                                value={keyField.value || ""}
+                                onChange={keyField.onChange}
+                                onBlur={keyField.onBlur}
+                                placeholder="32-character hex integration key"
+                              />
+                            </FormControl>
+                          )}
+                        />
+                      )}
                     </AccordionContent>
                   </AccordionItem>
                 );
@@ -922,6 +993,11 @@ export const CreatePkiAlertV2FormSteps = ({
               {watchedEventType === PkiAlertEventTypeV2.EXPIRATION && (
                 <GenericFieldLabel label="Alert Before">
                   {formatAlertBefore(watch("alertBefore"))}
+                </GenericFieldLabel>
+              )}
+              {watchedEventType === PkiAlertEventTypeV2.EXPIRATION && (
+                <GenericFieldLabel label="Daily Alerts">
+                  {watch("notificationConfig.enableDailyNotification") ? "Enabled" : "Disabled"}
                 </GenericFieldLabel>
               )}
               {watch("description") && (
@@ -976,8 +1052,8 @@ export const CreatePkiAlertV2FormSteps = ({
                     />
                     <div className="flex min-w-0 flex-1 flex-col">
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-mineshaft-100 capitalize">
-                          {channel.channelType}
+                        <span className="text-sm font-medium text-mineshaft-100">
+                          {getChannelDisplayName(channel.channelType)}
                         </span>
                         {channel.channelType === PkiAlertChannelTypeV2.WEBHOOK &&
                           ((channel.config as TPkiAlertChannelConfigWebhook).signingSecret ? (
@@ -1034,6 +1110,9 @@ export const CreatePkiAlertV2FormSteps = ({
                             return config.webhookUrl
                               ? "Slack webhook configured"
                               : "Not configured";
+                          }
+                          if (channel.channelType === PkiAlertChannelTypeV2.PAGERDUTY) {
+                            return "PagerDuty integration configured";
                           }
                           return "";
                         })()}

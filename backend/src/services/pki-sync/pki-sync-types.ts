@@ -64,6 +64,7 @@ export type TPkiSyncWithCredentials = TPkiSync & {
     app: string;
     credentials: Record<string, unknown>;
     orgId: string;
+    gatewayId?: string;
   };
 };
 
@@ -96,7 +97,7 @@ export type TCreatePkiSyncDTO = {
   projectId: string;
   certificateIds?: string[];
   auditLogInfo: AuditLogInfo;
-  resourceMetadata?: ResourceMetadataDTO;
+  resourceInternalMetadata?: ResourceMetadataDTO;
 };
 
 export type TUpdatePkiSyncDTO = {
@@ -111,7 +112,7 @@ export type TUpdatePkiSyncDTO = {
   connectionId?: string;
   certificateIds?: string[];
   auditLogInfo: AuditLogInfo;
-  resourceMetadata?: ResourceMetadataDTO;
+  resourceInternalMetadata?: ResourceMetadataDTO;
 };
 
 export type TDeletePkiSyncDTO = {

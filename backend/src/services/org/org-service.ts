@@ -20,6 +20,7 @@ import {
   OrgPermissionActions,
   OrgPermissionGroupActions,
   OrgPermissionSecretShareAction,
+  OrgPermissionSsoActions,
   OrgPermissionSubjects
 } from "@app/ee/services/permission/org-permission";
 import { TPermissionServiceFactory } from "@app/ee/services/permission/permission-service-types";
@@ -69,6 +70,7 @@ import {
   TGetOrgGroupsDTO,
   TGetOrgMembershipDTO,
   TListProjectMembershipsByOrgMembershipIdDTO,
+  TOrgWithSubOrgs,
   TResendOrgMemberInvitationDTO,
   TUpdateOrgDTO,
   TUpdateOrgMembershipDTO,
@@ -200,6 +202,10 @@ export const orgServiceFactory = ({
 
     // Filter out orgs where the membership object is an invitation
     return orgs.filter((org) => org.userStatus !== "invited");
+  };
+
+  const findAllAccessibleOrganizationsWithSubOrgs = async (userId: string): Promise<TOrgWithSubOrgs[]> => {
+    return orgDAL.listOrganizationsWithSubOrgs({ actorId: userId });
   };
 
   /*
@@ -474,7 +480,7 @@ export const orgServiceFactory = ({
         throw new BadRequestError({
           message: "Failed to enforce/un-enforce SSO due to plan restriction. Upgrade plan to enforce/un-enforce SSO."
         });
-      ForbiddenError.from(permission).throwUnlessCan(OrgPermissionActions.Edit, OrgPermissionSubjects.Sso);
+      ForbiddenError.from(permission).throwUnlessCan(OrgPermissionSsoActions.Edit, OrgPermissionSubjects.Sso);
     }
 
     if (scimEnabled !== undefined) {
@@ -497,7 +503,7 @@ export const orgServiceFactory = ({
           message: "Failed to enforce Google SSO due to plan restriction. Upgrade plan to enforce Google SSO."
         });
       }
-      ForbiddenError.from(permission).throwUnlessCan(OrgPermissionActions.Edit, OrgPermissionSubjects.Sso);
+      ForbiddenError.from(permission).throwUnlessCan(OrgPermissionSsoActions.Edit, OrgPermissionSubjects.Sso);
     }
 
     if (authEnforced && googleSsoAuthEnforced) {
@@ -747,7 +753,7 @@ export const orgServiceFactory = ({
       const user = await userDAL.findById(userId, tx);
       const { access: accessToken, refresh: refreshToken } = await loginService.generateUserTokens(
         {
-          user,
+          userId: user.id,
           authMethod: decodedToken.authMethod,
           ip: ipAddress,
           userAgent: userAgentHeader,
@@ -939,9 +945,7 @@ export const orgServiceFactory = ({
    * magic link and issue a temporary signup token for user to complete setting up their account
    */
   const verifyUserToOrg = async ({ orgId, email, code }: TVerifyUserToOrgDTO) => {
-    const usersByUsername = await userDAL.findUserByUsername(email);
-    const user =
-      usersByUsername?.length > 1 ? usersByUsername.find((el) => el.username === email) : usersByUsername?.[0];
+    const user = await userDAL.findOne({ username: email });
     if (!user) {
       throw new NotFoundError({ message: "User not found" });
     }
@@ -986,14 +990,9 @@ export const orgServiceFactory = ({
       isEmailVerified: true
     });
 
+    // If user already completed signup, they'll be promoted to Accepted
+    // when they authenticate via selectOrganization or processProviderCallback
     if (user.isAccepted) {
-      // this means user has already completed signup process
-      // isAccepted is set true when keys are exchanged
-      await orgDAL.updateMembershipById(orgMembership.id, {
-        scopeOrgId: orgId,
-        status: OrgMembershipStatus.Accepted
-      });
-      await licenseService.updateSubscriptionOrgMemberCount(orgId);
       return { user };
     }
 
@@ -1293,6 +1292,7 @@ export const orgServiceFactory = ({
     findAllWorkspaces,
     addGhostUser,
     updateOrgMembership,
+    findAllAccessibleOrganizationsWithSubOrgs,
     // incident contacts
     findIncidentContacts,
     createIncidentContact,

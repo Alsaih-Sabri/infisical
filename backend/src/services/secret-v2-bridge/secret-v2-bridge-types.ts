@@ -4,7 +4,11 @@ import { SecretType, TSecretsV2, TSecretsV2Insert, TSecretsV2Update } from "@app
 import { ProjectPermissionSecretActions } from "@app/ee/services/permission/project-permission";
 import { OrderByDirection, TProjectPermission } from "@app/lib/types";
 import { TProjectDALFactory } from "@app/services/project/project-dal";
-import { SecretsOrderBy } from "@app/services/secret/secret-types";
+import {
+  PersonalOverridesBehavior,
+  SecretImportReferencesBehavior,
+  SecretsOrderBy
+} from "@app/services/secret/secret-types";
 import { TSecretFolderDALFactory } from "@app/services/secret-folder/secret-folder-dal";
 import { TSecretTagDALFactory } from "@app/services/secret-tag/secret-tag-dal";
 
@@ -33,6 +37,9 @@ export enum SecretUpdateMode {
 
 export type TGetSecretsDTO = {
   expandSecretReferences?: boolean;
+  personalOverridesBehavior: PersonalOverridesBehavior;
+  secretImportReferencesBehavior: SecretImportReferencesBehavior;
+  expandPersonalOverrides?: boolean;
   path: string;
   environment: string;
   includeImports?: boolean;
@@ -51,6 +58,7 @@ export type TGetSecretsDTO = {
   search?: string;
   keys?: string[];
   excludeRotatedSecrets?: boolean;
+  ifNoneMatch?: string;
 } & TProjectPermission;
 
 export type TGetSecretsMissingReadValuePermissionDTO = Omit<
@@ -63,6 +71,7 @@ export type TGetASecretDTO = {
   path: string;
   environment: string;
   expandSecretReferences?: boolean;
+  expandPersonalOverrides?: boolean;
   type: "shared" | "personal";
   includeImports?: boolean;
   version?: number;
@@ -175,6 +184,7 @@ export type TFnSecretBulkInsert = {
       tagIds?: string[];
       references: TSecretReference[];
       secretMetadata?: { key: string; value?: string | null; encryptedValue?: Buffer | null }[];
+      parentSecretVersionId?: string;
     }
   >;
   resourceMetadataDAL: Pick<TResourceMetadataDALFactory, "insertMany">;
@@ -207,10 +217,12 @@ export type TFnSecretBulkUpdate = {
     data: TRequireReferenceIfValue & {
       tags?: string[];
       secretMetadata?: { key: string; value?: string | null; encryptedValue?: Buffer | null }[];
+      parentSecretVersionId?: string;
     };
   }[];
   resourceMetadataDAL: Pick<TResourceMetadataDALFactory, "insertMany" | "delete">;
-  secretDAL: Pick<TSecretV2BridgeDALFactory, "bulkUpdate" | "upsertSecretReferences" | "find">;
+  secretDAL: Pick<TSecretV2BridgeDALFactory, "bulkUpdate" | "upsertSecretReferences" | "find"> &
+    Partial<Pick<TSecretV2BridgeDALFactory, "bulkUpdateById">>;
   secretVersionDAL: Pick<TSecretVersionV2DALFactory, "insertMany">;
   secretTagDAL: Pick<TSecretTagDALFactory, "saveTagsToSecretV2" | "deleteTagsToSecretV2" | "find">;
   secretVersionTagDAL: Pick<TSecretVersionV2TagDALFactory, "insertMany">;

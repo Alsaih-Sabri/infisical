@@ -3,7 +3,7 @@ import path from "node:path";
 import { Knex } from "knex";
 import RE2 from "re2";
 
-import { SecretType, TableName, TSecretFolders, TSecretsV2 } from "@app/db/schemas";
+import { SecretType, TableName, TSecretFolders, TSecretImports, TSecretsV2, TSecretVersionsV2 } from "@app/db/schemas";
 import { NotFoundError } from "@app/lib/errors";
 import { groupBy } from "@app/lib/fn";
 import { logger } from "@app/lib/logger";
@@ -15,13 +15,18 @@ import { ResourceMetadataWithEncryptionDTO } from "../resource-metadata/resource
 import { INFISICAL_SECRET_VALUE_HIDDEN_MASK } from "../secret/secret-fns";
 import { TSecretQueueFactory } from "../secret/secret-queue";
 import { TSecretFolderDALFactory } from "../secret-folder/secret-folder-dal";
+import { TSecretImportDALFactory } from "../secret-import/secret-import-dal";
 import { TSecretReminderRecipient } from "../secret-reminder-recipients/secret-reminder-recipients-types";
-import { getAllSecretReferences } from "./secret-reference-fns";
+import { expandSecretReferencesFactory, getAllSecretReferences } from "./secret-reference-fns";
 import { TSecretV2BridgeDALFactory } from "./secret-v2-bridge-dal";
 import { TFnSecretBulkDelete, TFnSecretBulkInsert, TFnSecretBulkUpdate } from "./secret-v2-bridge-types";
 import { TSecretVersionV2DALFactory } from "./secret-version-dal";
 
 export const shouldUseSecretV2Bridge = (version: number) => version === 3;
+
+const BULK_BATCH_SIZE = 500;
+
+const RESERVED_REPLICATION_IMPORT_REGEX = new RE2("/__reserve_replication_([a-f0-9-]{36})");
 
 // these functions are special functions shared by a couple of resources
 // used by secret approval, rotation or anywhere in which secret needs to modified
@@ -68,10 +73,14 @@ export const fnSecretBulkInsert = async ({
   const identityActorId = actor && actor.type === ActorType.IDENTITY ? actor.actorId : undefined;
   const actorType = actor?.type || ActorType.PLATFORM;
 
-  const newSecrets = await secretDAL.insertMany(
-    sanitizedInputSecrets.map((el) => ({ ...el, folderId })),
-    tx
-  );
+  const insertData = sanitizedInputSecrets.map((el) => ({ ...el, folderId }));
+  const newSecrets: TSecretsV2[] = [];
+  for (let i = 0; i < insertData.length; i += BULK_BATCH_SIZE) {
+    const batch = insertData.slice(i, i + BULK_BATCH_SIZE);
+    // eslint-disable-next-line no-await-in-loop
+    const batchResult = await secretDAL.insertMany(batch, tx);
+    newSecrets.push(...batchResult);
+  }
 
   const newSecretGroupedByKeyName = groupBy(newSecrets, (item) => item.key);
   const newSecretTags = inputSecrets.flatMap(({ tagIds: secretTags = [], key }) =>
@@ -81,26 +90,31 @@ export const fnSecretBulkInsert = async ({
     }))
   );
 
-  const secretVersions = await secretVersionDAL.insertMany(
-    sanitizedInputSecrets.map((el, index) => ({
-      ...el,
-      folderId,
-      userActorId,
-      identityActorId,
-      actorType,
-      metadata: inputSecrets?.[index]?.secretMetadata
-        ? JSON.stringify(
-            inputSecrets?.[index]?.secretMetadata?.map((meta) => ({
-              key: meta.key,
-              value: meta?.value,
-              encryptedValue: meta?.encryptedValue?.toString("base64")
-            }))
-          )
-        : null,
-      secretId: newSecretGroupedByKeyName[el.key][0].id
-    })),
-    tx
-  );
+  const versionData = sanitizedInputSecrets.map((el, index) => ({
+    ...el,
+    folderId,
+    userActorId,
+    identityActorId,
+    actorType,
+    metadata: inputSecrets?.[index]?.secretMetadata
+      ? JSON.stringify(
+          inputSecrets?.[index]?.secretMetadata?.map((meta) => ({
+            key: meta.key,
+            value: meta?.value,
+            encryptedValue: meta?.encryptedValue?.toString("base64")
+          }))
+        )
+      : null,
+    secretId: newSecretGroupedByKeyName[el.key][0].id,
+    parentVersionId: inputSecrets?.[index]?.parentSecretVersionId
+  }));
+  const secretVersions: TSecretVersionsV2[] = [];
+  for (let i = 0; i < versionData.length; i += BULK_BATCH_SIZE) {
+    const batch = versionData.slice(i, i + BULK_BATCH_SIZE);
+    // eslint-disable-next-line no-await-in-loop
+    const batchResult = await secretVersionDAL.insertMany(batch, tx);
+    secretVersions.push(...batchResult);
+  }
 
   const changes = secretVersions
     .filter(({ type }) => type === SecretType.Shared)
@@ -210,37 +224,40 @@ export const fnSecretBulkUpdate = async ({
     })
   );
 
+  // const allHaveIds = sanitizedInputSecrets.every((s): s is typeof s & { filter: { id: string } } => !!s.filter.id);
   const newSecrets = await secretDAL.bulkUpdate(sanitizedInputSecrets, tx);
-  const secretVersions = await secretVersionDAL.insertMany(
-    newSecrets.map(
-      (
-        { skipMultilineEncoding, type, key, userId, encryptedComment, version, encryptedValue, id: secretId },
-        index
-      ) => ({
-        skipMultilineEncoding,
-        type,
-        key,
-        userId,
-        encryptedComment,
-        version,
-        metadata:
-          JSON.stringify(
-            inputSecrets?.[index]?.data?.secretMetadata?.map((meta) => ({
-              key: meta.key,
-              value: meta?.value,
-              encryptedValue: meta?.encryptedValue?.toString("base64")
-            }))
-          ) || null,
-        encryptedValue,
-        folderId,
-        secretId,
-        userActorId,
-        identityActorId,
-        actorType
-      })
-    ),
-    tx
+  const versionData = newSecrets.map(
+    ({ skipMultilineEncoding, type, key, userId, encryptedComment, version, encryptedValue, id: secretId }, index) => ({
+      skipMultilineEncoding,
+      type,
+      key,
+      userId,
+      encryptedComment,
+      version,
+      metadata:
+        JSON.stringify(
+          inputSecrets?.[index]?.data?.secretMetadata?.map((meta) => ({
+            key: meta.key,
+            value: meta?.value,
+            encryptedValue: meta?.encryptedValue?.toString("base64")
+          }))
+        ) || null,
+      encryptedValue,
+      folderId,
+      secretId,
+      userActorId,
+      identityActorId,
+      actorType,
+      parentVersionId: inputSecrets?.[index]?.data?.parentSecretVersionId
+    })
   );
+  const secretVersions: TSecretVersionsV2[] = [];
+  for (let i = 0; i < versionData.length; i += BULK_BATCH_SIZE) {
+    const batch = versionData.slice(i, i + BULK_BATCH_SIZE);
+    // eslint-disable-next-line no-await-in-loop
+    const batchResult = await secretVersionDAL.insertMany(batch, tx);
+    secretVersions.push(...batchResult);
+  }
 
   await secretDAL.upsertSecretReferences(
     inputSecrets
@@ -683,8 +700,9 @@ export const fnUpdateSecretLinkedReferences = async ({
 
   const allSecretsToUpdate: Array<TSecretsV2> = [...nestedSecretsToUpdate, ...secretsToCheck];
 
-  // we track updated secrets grouped by folder for the commit creation
-  const updatedSecretsByFolder: Map<string, Array<{ secret: TSecretsV2; newEncryptedValue: Buffer }>> = new Map();
+  // Use Map with secretId as key to avoid duplicates when a secret references the renamed secret multiple times
+  const updatedSecretsMap: Map<string, { secret: TSecretsV2; newEncryptedValue: Buffer; newVersion: number }> =
+    new Map();
 
   for await (const secretToUpdate of allSecretsToUpdate) {
     if (!secretToUpdate.encryptedValue) {
@@ -724,20 +742,38 @@ export const fnUpdateSecretLinkedReferences = async ({
     if (newValue !== originalValue) {
       const newEncryptedValue = encryptor({ plainText: Buffer.from(newValue) }).cipherTextBlob;
 
-      await secretDAL.updateById(secretToUpdate.id, { encryptedValue: newEncryptedValue }, tx);
+      // Update secret with version increment
+      const updatedSecret = await secretDAL.updateById(
+        secretToUpdate.id,
+        { encryptedValue: newEncryptedValue, $incr: { version: 1 } },
+        tx
+      );
 
-      // group by folder for commit creation
-      const folderSecrets = updatedSecretsByFolder.get(secretToUpdate.folderId) || [];
-      folderSecrets.push({ secret: secretToUpdate, newEncryptedValue });
-      updatedSecretsByFolder.set(secretToUpdate.folderId, folderSecrets);
+      // Track updated secret by ID to avoid duplicates
+      updatedSecretsMap.set(secretToUpdate.id, {
+        secret: updatedSecret,
+        newEncryptedValue,
+        newVersion: updatedSecret.version
+      });
     }
+  }
+
+  // Group updated secrets by folder for commit creation
+  const updatedSecretsByFolder: Map<
+    string,
+    Array<{ secret: TSecretsV2; newEncryptedValue: Buffer; newVersion: number }>
+  > = new Map();
+  for (const [, data] of updatedSecretsMap) {
+    const folderSecrets = updatedSecretsByFolder.get(data.secret.folderId) || [];
+    folderSecrets.push(data);
+    updatedSecretsByFolder.set(data.secret.folderId, folderSecrets);
   }
 
   for await (const [updateFolderId, folderSecrets] of updatedSecretsByFolder) {
     const secretVersions = await secretVersionDAL.insertMany(
-      folderSecrets.map(({ secret, newEncryptedValue }) => ({
+      folderSecrets.map(({ secret, newEncryptedValue, newVersion }) => ({
         secretId: secret.id,
-        version: secret.version + 1,
+        version: newVersion,
         key: secret.key,
         encryptedValue: newEncryptedValue,
         encryptedComment: secret.encryptedComment,
@@ -852,9 +888,11 @@ export const fnUpdateMovedSecretReferences = async ({
   decryptor,
   tx
 }: TFnUpdateMovedSecretReferences) => {
-  const updatedSecretsByFolder: Map<string, Array<{ secret: TSecretsV2; newEncryptedValue: Buffer }>> = new Map();
+  // Use Map with secretId as key to avoid duplicates when a secret references multiple moved secrets
+  const updatedSecretsMap: Map<string, { secret: TSecretsV2; newEncryptedValue: Buffer; newVersion: number }> =
+    new Map();
 
-  const destPathPart = destinationSecretPath === "/" ? "" : `.${destinationSecretPath.slice(1).replace(/\//g, ".")}`;
+  const destPathPart = destinationSecretPath === "/" ? "" : `.${destinationSecretPath.slice(1).replaceAll("/", ".")}`;
   const newNestedRef = `\${${destinationEnvironment}${destPathPart}.${secretKey}}`;
 
   // case: local references, not stored in the db, we need to scan the folder to find secrets that reference the old secret ky
@@ -889,12 +927,19 @@ export const fnUpdateMovedSecretReferences = async ({
     if (newValue !== originalValue) {
       const newEncryptedValue = encryptor({ plainText: Buffer.from(newValue) }).cipherTextBlob;
 
-      await secretDAL.updateById(secretToUpdate.id, { encryptedValue: newEncryptedValue }, tx);
+      // Update secret with version increment - use $incr to properly increment version
+      const updatedSecret = await secretDAL.updateById(
+        secretToUpdate.id,
+        { encryptedValue: newEncryptedValue, $incr: { version: 1 } },
+        tx
+      );
 
-      // group by folder for commit creation
-      const folderSecrets = updatedSecretsByFolder.get(secretToUpdate.folderId) || [];
-      folderSecrets.push({ secret: secretToUpdate, newEncryptedValue });
-      updatedSecretsByFolder.set(secretToUpdate.folderId, folderSecrets);
+      // Track updated secret by ID to avoid duplicates
+      updatedSecretsMap.set(secretToUpdate.id, {
+        secret: updatedSecret,
+        newEncryptedValue,
+        newVersion: updatedSecret.version
+      });
 
       // update the secret references table (only for nested refs)
       const updatedNestedRefs = [
@@ -947,11 +992,19 @@ export const fnUpdateMovedSecretReferences = async ({
         if (newValue !== originalValue) {
           const newEncryptedValue = encryptor({ plainText: Buffer.from(newValue) }).cipherTextBlob;
 
-          await secretDAL.updateById(secretToUpdate.id, { encryptedValue: newEncryptedValue }, tx);
+          // Update secret with version increment
+          const updatedSecret = await secretDAL.updateById(
+            secretToUpdate.id,
+            { encryptedValue: newEncryptedValue, $incr: { version: 1 } },
+            tx
+          );
 
-          const folderSecrets = updatedSecretsByFolder.get(secretToUpdate.folderId) || [];
-          folderSecrets.push({ secret: secretToUpdate, newEncryptedValue });
-          updatedSecretsByFolder.set(secretToUpdate.folderId, folderSecrets);
+          // Track updated secret by ID to avoid duplicates
+          updatedSecretsMap.set(secretToUpdate.id, {
+            secret: updatedSecret,
+            newEncryptedValue,
+            newVersion: updatedSecret.version
+          });
 
           const updatedNestedRefs = nestedReferences.filter(
             (ref) =>
@@ -990,11 +1043,19 @@ export const fnUpdateMovedSecretReferences = async ({
         if (newValue !== originalValue) {
           const newEncryptedValue = encryptor({ plainText: Buffer.from(newValue) }).cipherTextBlob;
 
-          await secretDAL.updateById(secretToUpdate.id, { encryptedValue: newEncryptedValue }, tx);
+          // Update secret with version increment
+          const updatedSecret = await secretDAL.updateById(
+            secretToUpdate.id,
+            { encryptedValue: newEncryptedValue, $incr: { version: 1 } },
+            tx
+          );
 
-          const folderSecrets = updatedSecretsByFolder.get(secretToUpdate.folderId) || [];
-          folderSecrets.push({ secret: secretToUpdate, newEncryptedValue });
-          updatedSecretsByFolder.set(secretToUpdate.folderId, folderSecrets);
+          // Track updated secret by ID to avoid duplicates
+          updatedSecretsMap.set(secretToUpdate.id, {
+            secret: updatedSecret,
+            newEncryptedValue,
+            newVersion: updatedSecret.version
+          });
 
           const updatedNestedRefs = nestedReferences.map((ref) => {
             if (
@@ -1060,11 +1121,19 @@ export const fnUpdateMovedSecretReferences = async ({
     if (valueChanged) {
       const newEncryptedValue = encryptor({ plainText: Buffer.from(updatedValue) }).cipherTextBlob;
 
-      await secretDAL.updateById(destinationMovedSecret.id, { encryptedValue: newEncryptedValue }, tx);
+      // Update secret with version increment
+      const updatedSecret = await secretDAL.updateById(
+        destinationMovedSecret.id,
+        { encryptedValue: newEncryptedValue, $incr: { version: 1 } },
+        tx
+      );
 
-      const folderSecrets = updatedSecretsByFolder.get(destinationMovedSecret.folderId) || [];
-      folderSecrets.push({ secret: destinationMovedSecret, newEncryptedValue });
-      updatedSecretsByFolder.set(destinationMovedSecret.folderId, folderSecrets);
+      // Track updated secret by ID to avoid duplicates
+      updatedSecretsMap.set(destinationMovedSecret.id, {
+        secret: updatedSecret,
+        newEncryptedValue,
+        newVersion: updatedSecret.version
+      });
 
       const { nestedReferences: finalNestedReferences } = getAllSecretReferences(updatedValue);
       await secretDAL.upsertSecretReferences(
@@ -1074,11 +1143,22 @@ export const fnUpdateMovedSecretReferences = async ({
     }
   }
 
+  // Group updated secrets by folder for commit creation
+  const updatedSecretsByFolder: Map<
+    string,
+    Array<{ secret: TSecretsV2; newEncryptedValue: Buffer; newVersion: number }>
+  > = new Map();
+  for (const [, data] of updatedSecretsMap) {
+    const folderSecrets = updatedSecretsByFolder.get(data.secret.folderId) || [];
+    folderSecrets.push(data);
+    updatedSecretsByFolder.set(data.secret.folderId, folderSecrets);
+  }
+
   for await (const [updateFolderId, folderSecrets] of updatedSecretsByFolder) {
     const secretVersions = await secretVersionDAL.insertMany(
-      folderSecrets.map(({ secret, newEncryptedValue }) => ({
+      folderSecrets.map(({ secret, newEncryptedValue, newVersion }) => ({
         secretId: secret.id,
-        version: secret.version + 1,
+        version: newVersion,
         key: secret.key,
         encryptedValue: newEncryptedValue,
         encryptedComment: secret.encryptedComment,
@@ -1132,4 +1212,192 @@ export const fnUpdateMovedSecretReferences = async ({
       })
     );
   }
+};
+
+type TCreateFetchFolderSecretsWithImportsArg = {
+  projectId: string;
+  secretDAL: Pick<TSecretV2BridgeDALFactory, "findByFolderId">;
+  secretImportDAL: Pick<TSecretImportDALFactory, "findByFolderIds" | "findByIds">;
+  folderDAL: Pick<TSecretFolderDALFactory, "findBySecretPath">;
+};
+
+// Returns a function that fetches direct secrets for a folder merged with its
+// one-level-deep imported secrets. Direct secrets take priority over imports.
+export const createFetchFolderSecretsWithImports = ({
+  projectId,
+  secretDAL,
+  secretImportDAL,
+  folderDAL
+}: TCreateFetchFolderSecretsWithImportsArg) => {
+  type ImportRow = Omit<TSecretImports, "importEnv"> & { importEnv: { id: string; slug: string; name: string } };
+  type SecretRow = Awaited<ReturnType<TCreateFetchFolderSecretsWithImportsArg["secretDAL"]["findByFolderId"]>>[number];
+
+  const recursiveFetch = async (
+    folderId: string,
+    userIdArg: string | undefined,
+    visitedFolderIds: Set<string>
+  ): Promise<SecretRow[]> => {
+    if (visitedFolderIds.has(folderId)) return [];
+    visitedFolderIds.add(folderId);
+
+    const directSecrets = await secretDAL.findByFolderId({ folderId, userId: userIdArg });
+    const rawImports = (await secretImportDAL.findByFolderIds([folderId])) as ImportRow[];
+    if (!rawImports.length) return directSecrets;
+
+    const reservedIds: string[] = [];
+    for (const imp of rawImports) {
+      if (imp.isReserved) {
+        const match = RESERVED_REPLICATION_IMPORT_REGEX.exec(imp.importPath);
+        if (match) reservedIds.push(match[1]);
+      }
+    }
+    let activeImports: ImportRow[] = rawImports;
+    if (reservedIds.length) {
+      const referenced = (await secretImportDAL.findByIds(reservedIds)) as ImportRow[];
+      const detailMap = new Map(referenced.map((r) => [r.id, { importPath: r.importPath, importEnv: r.importEnv }]));
+      activeImports = rawImports.map((imp) => {
+        if (!imp.isReserved) return imp;
+        const match = RESERVED_REPLICATION_IMPORT_REGEX.exec(imp.importPath);
+        if (!match) return imp;
+        const details = detailMap.get(match[1]);
+        return details ? { ...imp, importPath: details.importPath, importEnv: details.importEnv } : imp;
+      });
+    }
+
+    const importedFolders = await Promise.all(
+      activeImports.map((i) => folderDAL.findBySecretPath(projectId, i.importEnv.slug, i.importPath))
+    );
+    const importedSecretArrays = await Promise.all(
+      importedFolders.filter(Boolean).map((f) => recursiveFetch(f!.id, userIdArg, visitedFolderIds))
+    );
+    const importedMerged = new Map<string, SecretRow>(importedSecretArrays.flat().map((s) => [s.key, s]));
+    directSecrets.forEach((s) => importedMerged.set(s.key, s));
+    return [...importedMerged.values()];
+  };
+
+  return (args: { folderId: string; userId?: string }) => recursiveFetch(args.folderId, args.userId, new Set());
+};
+
+type TCreateRelativeImportExpanderArg = {
+  projectId: string;
+  currentEnvironment: string;
+  currentSecretPath: string;
+  secretDAL: Pick<TSecretV2BridgeDALFactory, "findByFolderId">;
+  secretImportDAL: Pick<TSecretImportDALFactory, "findByFolderIds" | "findByIds">;
+  folderDAL: Pick<TSecretFolderDALFactory, "findBySecretPath">;
+  decryptSecretValue: (value?: Buffer | null) => string;
+  canExpandValue: (environment: string, secretPath: string, secretKey: string, secretTagSlugs: string[]) => boolean;
+  userId?: string;
+};
+
+export const createRelativeImportExpander = ({
+  projectId,
+  currentEnvironment,
+  currentSecretPath,
+  secretDAL,
+  secretImportDAL,
+  folderDAL,
+  decryptSecretValue,
+  canExpandValue,
+  userId
+}: TCreateRelativeImportExpanderArg): {
+  expandImportedSecretReferences: (inputSecret: {
+    value?: string;
+    skipMultilineEncoding?: boolean | null;
+    secretPath: string;
+    environment: string;
+    secretKey: string;
+  }) => Promise<string | undefined>;
+} => {
+  const relativeImportExpanders = new Map<string, ReturnType<typeof expandSecretReferencesFactory>>();
+  const fetchFolderSecretsWithImports = createFetchFolderSecretsWithImports({
+    projectId,
+    secretDAL,
+    secretImportDAL,
+    folderDAL
+  });
+
+  const getRelativeExpander = (sourceEnvironment: string, sourcePath: string) => {
+    const expanderKey = `${sourceEnvironment}:${sourcePath}`;
+    if (relativeImportExpanders.has(expanderKey)) return relativeImportExpanders.get(expanderKey)!;
+
+    const virtualFolderId = `__relative_import_${expanderKey}`;
+    const keyOriginMap = new Map<string, { environment: string; secretPath: string }>();
+
+    const expander = expandSecretReferencesFactory({
+      projectId,
+      folderDAL: {
+        findBySecretPath: async (pId, env, sPath) => {
+          if (env === currentEnvironment && sPath === currentSecretPath) {
+            // Intercept current-env lookups and return the virtual merged-folder sentinel
+            return { id: virtualFolderId } as unknown as Awaited<ReturnType<typeof folderDAL.findBySecretPath>>;
+          }
+          return folderDAL.findBySecretPath(pId, env, sPath);
+        }
+      },
+      secretDAL: {
+        findByFolderId: async (folderIdArgs) => {
+          if (folderIdArgs.folderId !== virtualFolderId) {
+            // non-virtual folder (e.g. prod, staging, etc). use import-aware fetch so that local refs within absolute-ref chains can resolve through the env's own secret imports.
+            return fetchFolderSecretsWithImports({ folderId: folderIdArgs.folderId, userId: folderIdArgs.userId });
+          }
+          const [currentFolder, sourceFolder] = await Promise.all([
+            folderDAL.findBySecretPath(projectId, currentEnvironment, currentSecretPath),
+            folderDAL.findBySecretPath(projectId, sourceEnvironment, sourcePath)
+          ]);
+          const [currentSecrets, sourceSecrets] = await Promise.all([
+            currentFolder
+              ? fetchFolderSecretsWithImports({ folderId: currentFolder.id, userId: folderIdArgs.userId })
+              : [],
+            sourceFolder
+              ? fetchFolderSecretsWithImports({ folderId: sourceFolder.id, userId: folderIdArgs.userId })
+              : []
+          ]);
+          // source goes in first (lower priority). current overwrites (higher priority). record the origin of each key so the permission check can use the right env.
+          const envMerged = new Map(
+            sourceSecrets.map((s) => {
+              keyOriginMap.set(s.key, { environment: sourceEnvironment, secretPath: sourcePath });
+              return [s.key, s];
+            })
+          );
+          currentSecrets.forEach((s) => {
+            keyOriginMap.set(s.key, { environment: currentEnvironment, secretPath: currentSecretPath });
+            envMerged.set(s.key, s);
+          });
+          return [...envMerged.values()];
+        }
+      },
+      decryptSecretValue,
+      // for local references resolved through the virtual merged folder, check permission against the secret's actual origin env — not the current env.
+      // without this, a user with broad current-env access could bypass source-env access controls on keys that fall through from the source when the current env has no override.
+      canExpandValue: (environment, secretPath, secretKey, secretTagSlugs) => {
+        if (environment === currentEnvironment && secretPath === currentSecretPath) {
+          const origin = keyOriginMap.get(secretKey);
+          if (origin) return canExpandValue(origin.environment, origin.secretPath, secretKey, secretTagSlugs);
+          return false;
+        }
+        return canExpandValue(environment, secretPath, secretKey, secretTagSlugs);
+      },
+      userId
+    });
+
+    relativeImportExpanders.set(expanderKey, expander);
+    return expander;
+  };
+
+  const expandImportedSecretReferences = (inputSecret: {
+    value?: string;
+    skipMultilineEncoding?: boolean | null;
+    secretPath: string;
+    environment: string;
+    secretKey: string;
+  }) => {
+    const { expandSecretReferences: relativeExpand } = getRelativeExpander(
+      inputSecret.environment,
+      inputSecret.secretPath
+    );
+    return relativeExpand({ ...inputSecret, environment: currentEnvironment, secretPath: currentSecretPath });
+  };
+
+  return { expandImportedSecretReferences };
 };

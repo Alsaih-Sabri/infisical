@@ -66,6 +66,8 @@ import { TSecretVersionV2DALFactory } from "@app/services/secret-v2-bridge/secre
 import { TSecretVersionV2TagDALFactory } from "@app/services/secret-v2-bridge/secret-version-tag-dal";
 import { TProjectSlackConfigDALFactory } from "@app/services/slack/project-slack-config-dal";
 import { SmtpTemplates, TSmtpService } from "@app/services/smtp/smtp-service";
+import { TTelemetryServiceFactory } from "@app/services/telemetry/telemetry-service";
+import { PostHogEventTypes } from "@app/services/telemetry/telemetry-types";
 import { TUserDALFactory } from "@app/services/user/user-dal";
 
 import { TLicenseServiceFactory } from "../license/license-service";
@@ -157,6 +159,7 @@ type TSecretApprovalRequestServiceFactoryDep = {
   microsoftTeamsService: Pick<TMicrosoftTeamsServiceFactory, "sendNotification">;
   folderCommitService: Pick<TFolderCommitServiceFactory, "createCommit">;
   notificationService: Pick<TNotificationServiceFactory, "createUserNotifications">;
+  telemetryService: Pick<TTelemetryServiceFactory, "sendPostHogEvents">;
 };
 
 export type TSecretApprovalRequestServiceFactory = ReturnType<typeof secretApprovalRequestServiceFactory>;
@@ -190,7 +193,8 @@ export const secretApprovalRequestServiceFactory = ({
   projectMicrosoftTeamsConfigDAL,
   microsoftTeamsService,
   folderCommitService,
-  notificationService
+  notificationService,
+  telemetryService
 }: TSecretApprovalRequestServiceFactoryDep) => {
   const requestCount = async ({
     projectId,
@@ -360,9 +364,10 @@ export const secretApprovalRequestServiceFactory = ({
         secretKey: el.key,
         id: el.id,
         version: el.version,
-        secretMetadata: (
-          el.secretMetadata as { key: string; value?: string | null; encryptedValue?: string | null }[] | null
-        )?.map((meta) => ({
+        secretMetadata: (Array.isArray(el.secretMetadata)
+          ? (el.secretMetadata as { key: string; value?: string | null; encryptedValue?: string | null }[])
+          : []
+        ).map((meta) => ({
           key: meta.key,
           isEncrypted: Boolean(meta.encryptedValue),
           value: meta.encryptedValue
@@ -739,9 +744,10 @@ export const secretApprovalRequestServiceFactory = ({
                   encryptedValue: el.encryptedValue,
                   skipMultilineEncoding: el.skipMultilineEncoding,
                   key: el.key,
-                  secretMetadata: (
-                    el.secretMetadata as { key: string; value?: string | null; encryptedValue?: string | null }[]
-                  )?.map((meta) => ({
+                  secretMetadata: (Array.isArray(el.secretMetadata)
+                    ? (el.secretMetadata as { key: string; value?: string | null; encryptedValue?: string | null }[])
+                    : []
+                  ).map((meta) => ({
                     key: meta.key,
                     [meta.encryptedValue ? "encryptedValue" : "value"]: meta.encryptedValue
                       ? Buffer.from(meta.encryptedValue, "base64")
@@ -850,9 +856,10 @@ export const secretApprovalRequestServiceFactory = ({
                     skipMultilineEncoding: el.skipMultilineEncoding !== null ? el.skipMultilineEncoding : undefined,
                     key: el.key,
                     tags: el?.tags.map(({ id }) => id),
-                    secretMetadata: (
-                      el.secretMetadata as { key: string; value?: string | null; encryptedValue?: string | null }[]
-                    )?.map((meta) => ({
+                    secretMetadata: (Array.isArray(el.secretMetadata)
+                      ? (el.secretMetadata as { key: string; value?: string | null; encryptedValue?: string | null }[])
+                      : []
+                    ).map((meta) => ({
                       key: meta.key,
                       [meta.encryptedValue ? "encryptedValue" : "value"]: meta.encryptedValue
                         ? Buffer.from(meta.encryptedValue, "base64")
@@ -1183,9 +1190,9 @@ export const secretApprovalRequestServiceFactory = ({
       events
     });
 
-    if (isSoftEnforcement) {
+    if (isSoftEnforcement && !hasMinApproval) {
       const cfg = getConfig();
-      const env = await projectEnvDAL.findOne({ id: policy.envId });
+      const env = await projectEnvDAL.findOne({ slug: environment, projectId });
       const requestedByUser = await userDAL.findOne({ id: actorId });
       const approverUsers = await userDAL.find({
         $in: {
@@ -1615,7 +1622,7 @@ export const secretApprovalRequestServiceFactory = ({
       return { ...doc, commits: approvalCommits };
     });
 
-    const env = await projectEnvDAL.findOne({ id: policy.envId });
+    const env = await projectEnvDAL.findOne({ slug: environment, projectId });
     const user = await userDAL.findById(actorId);
 
     const projectPath = `/organizations/${actorOrgId}/projects/secret-management/${projectId}`;
@@ -1623,6 +1630,7 @@ export const secretApprovalRequestServiceFactory = ({
     const cfg = getConfig();
     const approvalUrl = `${cfg.SITE_URL}${approvalPath}?requestId=${secretApprovalRequest.id}`;
 
+    const project = await projectDAL.findById(projectId);
     await triggerWorkflowIntegrationNotification({
       input: {
         projectId,
@@ -1633,6 +1641,7 @@ export const secretApprovalRequestServiceFactory = ({
             environment: env.name,
             secretPath,
             projectId,
+            projectName: project.name,
             requestId: secretApprovalRequest.id,
             secretKeys: [...new Set(Object.values(data).flatMap((arr) => arr?.map((item) => item.secretName) ?? []))],
             approvalUrl
@@ -1656,6 +1665,22 @@ export const secretApprovalRequestServiceFactory = ({
       projectId,
       notificationService
     });
+
+    void telemetryService
+      .sendPostHogEvents({
+        event: PostHogEventTypes.SecretApprovalRequestSubmitted,
+        distinctId: user.username ?? user.email ?? actorId,
+        organizationId: actorOrgId,
+        properties: {
+          requestId: secretApprovalRequest.id,
+          policyId: policy.id,
+          projectId,
+          environment,
+          secretPath,
+          numberOfCommits: commits.length
+        }
+      })
+      .catch(() => {});
 
     return secretApprovalRequest;
   };
@@ -1917,12 +1942,19 @@ export const secretApprovalRequestServiceFactory = ({
       const latestSecretVersions = await secretVersionV2BridgeDAL.findLatestVersionMany(folderId, deletedSecretIds);
       commits.push(
         ...deletedSecrets.map(({ secretKey }) => {
-          const secretId = secretsGroupedByKey[secretKey][0].id;
+          const secret = secretsGroupedByKey[secretKey][0];
+          const secretId = secret.id;
           const { metadata, ...el } = latestSecretVersions[secretId];
           return {
             op: SecretOperations.Delete as const,
             ...el,
-            secretMetadata: JSON.stringify(metadata || []),
+            secretMetadata: JSON.stringify(
+              (secret.secretMetadata || []).map((meta) => ({
+                key: meta.key,
+                value: meta.value || undefined,
+                encryptedValue: meta.encryptedValue?.toString("base64") || undefined
+              }))
+            ),
             key: secretKey,
             secret: secretId,
             secretVersion: latestSecretVersions[secretId].id
@@ -2023,7 +2055,7 @@ export const secretApprovalRequestServiceFactory = ({
       : await secretApprovalRequestDAL.transaction(executeApprovalRequestCreation);
 
     const user = await userDAL.findById(actorId);
-    const env = await projectEnvDAL.findOne({ id: policy.envId });
+    const env = await projectEnvDAL.findOne({ slug: environment, projectId });
 
     const projectPath = `/organizations/${actorOrgId}/projects/secret-management/${project.id}`;
     const approvalPath = `${projectPath}/approval`;
@@ -2040,6 +2072,7 @@ export const secretApprovalRequestServiceFactory = ({
             environment: env.name,
             secretPath,
             projectId,
+            projectName: project.name,
             requestId: secretApprovalRequest.id,
             secretKeys: [...new Set(Object.values(data).flatMap((arr) => arr?.map((item) => item.secretKey) ?? []))],
             approvalUrl
@@ -2063,6 +2096,23 @@ export const secretApprovalRequestServiceFactory = ({
       projectId,
       notificationService
     });
+
+    void telemetryService
+      .sendPostHogEvents({
+        event: PostHogEventTypes.SecretApprovalRequestSubmitted,
+        distinctId: user.username ?? user.email ?? actorId,
+        organizationId: actorOrgId,
+        properties: {
+          requestId: secretApprovalRequest.id,
+          policyId: policy.id,
+          projectId,
+          environment,
+          secretPath,
+          numberOfCommits: commits.length
+        }
+      })
+      .catch(() => {});
+
     return secretApprovalRequest;
   };
 

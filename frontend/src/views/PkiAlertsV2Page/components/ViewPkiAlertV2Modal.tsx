@@ -24,6 +24,7 @@ import {
 import { Badge } from "@app/components/v3";
 import {
   PkiAlertChannelTypeV2,
+  PkiAlertEventTypeV2,
   TPkiAlertChannelConfigEmail,
   TPkiAlertChannelConfigWebhookResponse,
   useGetPkiAlertV2ById,
@@ -33,6 +34,7 @@ import {
 import {
   formatAlertBefore,
   formatEventType,
+  getChannelDisplayName,
   getChannelIcon,
   getWebhookHostname
 } from "../utils/pki-alert-formatters";
@@ -127,7 +129,9 @@ export const ViewPkiAlertV2Modal = ({ isOpen, onOpenChange, alertId }: Props) =>
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabList>
               <Tab value="overview">Overview</Tab>
-              <Tab value="certificates">Matching Certificates</Tab>
+              {alert.eventType !== PkiAlertEventTypeV2.ISSUANCE && (
+                <Tab value="certificates">Matching Certificates</Tab>
+              )}
             </TabList>
 
             <TabPanel value="overview">
@@ -140,14 +144,29 @@ export const ViewPkiAlertV2Modal = ({ isOpen, onOpenChange, alertId }: Props) =>
                       <span className="text-gray-300">{formatEventType(alert.eventType)}</span>
                     </div>
 
-                    <div>
-                      <div className="mb-1 block text-sm font-medium text-gray-400">
-                        Alert Before
-                      </div>
-                      <span className="text-gray-300">
-                        {formatAlertBefore(alert.alertBefore, "Not set")}
-                      </span>
-                    </div>
+                    {alert.eventType === PkiAlertEventTypeV2.EXPIRATION && (
+                      <>
+                        <div>
+                          <div className="mb-1 block text-sm font-medium text-gray-400">
+                            Alert Before
+                          </div>
+                          <span className="text-gray-300">
+                            {formatAlertBefore(alert.alertBefore, "Not set")}
+                          </span>
+                        </div>
+
+                        <div>
+                          <div className="mb-1 block text-sm font-medium text-gray-400">
+                            Daily Alerts
+                          </div>
+                          <span className="text-gray-300">
+                            {alert.notificationConfig?.enableDailyNotification
+                              ? "Enabled"
+                              : "Disabled"}
+                          </span>
+                        </div>
+                      </>
+                    )}
 
                     <div>
                       <div className="mb-1 block text-sm font-medium text-gray-400">Created</div>
@@ -202,8 +221,8 @@ export const ViewPkiAlertV2Modal = ({ isOpen, onOpenChange, alertId }: Props) =>
                           />
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2">
-                              <span className="font-medium text-mineshaft-100 capitalize">
-                                {channel.channelType}
+                              <span className="font-medium text-mineshaft-100">
+                                {getChannelDisplayName(channel.channelType)}
                               </span>
                               {channel.channelType === PkiAlertChannelTypeV2.WEBHOOK &&
                                 (channel.config as TPkiAlertChannelConfigWebhookResponse)
@@ -255,6 +274,11 @@ export const ViewPkiAlertV2Modal = ({ isOpen, onOpenChange, alertId }: Props) =>
                             {channel.channelType === PkiAlertChannelTypeV2.SLACK && (
                               <div className="mt-1 truncate text-sm text-mineshaft-400">
                                 Slack webhook configured
+                              </div>
+                            )}
+                            {channel.channelType === PkiAlertChannelTypeV2.PAGERDUTY && (
+                              <div className="mt-1 truncate text-sm text-mineshaft-400">
+                                PagerDuty integration configured
                               </div>
                             )}
                           </div>

@@ -1,7 +1,7 @@
 import { z } from "zod";
 
-// Sentinel value for masked signing secret display in edit mode
-export const SIGNING_SECRET_MASK = "*****";
+// Sentinel value for masked secrets in edit mode (signing secret, integration key, etc.)
+export const SECRET_MASK = "*****";
 
 export enum PkiAlertEventTypeV2 {
   EXPIRATION = "expiration",
@@ -13,7 +13,8 @@ export enum PkiAlertEventTypeV2 {
 export enum PkiAlertChannelTypeV2 {
   EMAIL = "email",
   WEBHOOK = "webhook",
-  SLACK = "slack"
+  SLACK = "slack",
+  PAGERDUTY = "pagerduty"
 }
 
 export enum PkiFilterFieldV2 {
@@ -56,10 +57,15 @@ export interface TPkiAlertChannelConfigSlack {
   webhookUrl: string;
 }
 
+export interface TPkiAlertChannelConfigPagerDuty {
+  integrationKey: string;
+}
+
 export type TPkiAlertChannelConfig =
   | TPkiAlertChannelConfigEmail
   | TPkiAlertChannelConfigWebhook
-  | TPkiAlertChannelConfigSlack;
+  | TPkiAlertChannelConfigSlack
+  | TPkiAlertChannelConfigPagerDuty;
 
 export interface TPkiAlertChannelV2 {
   id: string;
@@ -89,6 +95,7 @@ export interface TPkiAlertV2 {
   alertBefore?: string;
   filters: TPkiFilterRuleV2[];
   enabled: boolean;
+  notificationConfig: { enableDailyNotification: boolean } | null;
   channels: TPkiAlertChannelV2[];
   lastRun: TLastRun | null;
   createdAt: string;
@@ -133,6 +140,7 @@ export interface TCreatePkiAlertV2 {
   alertBefore?: string;
   filters: TPkiFilterRuleV2[];
   enabled?: boolean;
+  notificationConfig?: { enableDailyNotification: boolean } | null;
   channels: TPkiAlertChannelInput[];
 }
 
@@ -144,6 +152,7 @@ export interface TUpdatePkiAlertV2 {
   alertBefore?: string;
   filters?: TPkiFilterRuleV2[];
   enabled?: boolean;
+  notificationConfig?: { enableDailyNotification: boolean } | null;
   channels?: TPkiAlertChannelInput[];
 }
 
@@ -167,7 +176,7 @@ export interface TGetPkiAlertV2MatchingCertificatesResponse {
 export interface TGetPkiAlertV2CurrentMatchingCertificates {
   projectId: string;
   filters: TPkiFilterRuleV2[];
-  alertBefore: string;
+  alertBefore?: string;
   limit?: number;
   offset?: number;
 }
@@ -245,13 +254,30 @@ const slackChannelSchema = z.object({
   enabled: z.boolean().default(true)
 });
 
+const pagerdutyChannelConfigSchema = z.object({
+  integrationKey: z
+    .string()
+    .refine(
+      (val) => /^[a-f0-9]{32}$/i.test(val),
+      "Integration key must be a 32-character hex string"
+    )
+});
+
+const pagerdutyChannelSchema = z.object({
+  id: z.string().uuid().optional(),
+  channelType: z.literal(PkiAlertChannelTypeV2.PAGERDUTY),
+  config: pagerdutyChannelConfigSchema,
+  enabled: z.boolean().default(true)
+});
+
 export const pkiAlertChannelV2Schema = z.discriminatedUnion("channelType", [
   emailChannelSchema,
   webhookChannelSchema,
-  slackChannelSchema
+  slackChannelSchema,
+  pagerdutyChannelSchema
 ]);
 
-export const createPkiAlertV2Schema = z.object({
+const basePkiAlertV2Schema = z.object({
   projectId: z.string().uuid(),
   name: z
     .string()
@@ -267,6 +293,7 @@ export const createPkiAlertV2Schema = z.object({
     .optional(),
   filters: z.array(pkiFilterRuleV2Schema),
   enabled: z.boolean().default(true),
+  notificationConfig: z.object({ enableDailyNotification: z.boolean() }).nullable().optional(),
   channels: z
     .array(pkiAlertChannelV2Schema)
     .min(1, "At least one notification channel is required")
@@ -276,4 +303,14 @@ export const createPkiAlertV2Schema = z.object({
     )
 });
 
-export const updatePkiAlertV2Schema = createPkiAlertV2Schema.partial().omit({ projectId: true });
+export const createPkiAlertV2Schema = basePkiAlertV2Schema.superRefine((data, ctx) => {
+  if (data.eventType === PkiAlertEventTypeV2.EXPIRATION && !data.alertBefore) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Alert Before is required for expiration alerts",
+      path: ["alertBefore"]
+    });
+  }
+});
+
+export const updatePkiAlertV2Schema = basePkiAlertV2Schema.partial().omit({ projectId: true });

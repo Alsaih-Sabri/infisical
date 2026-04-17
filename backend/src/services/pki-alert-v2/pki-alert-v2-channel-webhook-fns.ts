@@ -10,6 +10,7 @@ import { blockLocalAndPrivateIpAddresses } from "@app/lib/validator/validate-url
 
 import { PKI_ALERT_RETRY_CONFIG, RETRYABLE_NETWORK_ERRORS } from "./pki-alert-v2-constants";
 import {
+  getRevocationReasonLabel,
   PkiWebhookEventType,
   TAlertInfo,
   TCertificateData,
@@ -73,44 +74,36 @@ const transformCertificates = (certificates: TCertificatePreview[]): TCertificat
       notBefore: cert.notBefore.toISOString(),
       notAfter: cert.notAfter.toISOString(),
       status: cert.status,
-      daysUntilExpiry
+      daysUntilExpiry,
+      ...(cert.revokedAt ? { revokedAt: new Date(cert.revokedAt).toISOString() } : {}),
+      ...(cert.revocationReason != null
+        ? { revocationReason: getRevocationReasonLabel(cert.revocationReason) ?? String(cert.revocationReason) }
+        : {})
     };
   });
 };
 
-// Event-specific data builders
-const buildCertificateExpirationEventData = (params: {
-  alert: TAlertInfo;
-  certificates: TCertificatePreview[];
-  appUrl: string;
-}): TBaseEventPayload => ({
-  subject: "certificate-expiration-alert",
-  data: {
-    alert: {
-      id: params.alert.id,
-      name: params.alert.name,
-      alertBefore: params.alert.alertBefore,
-      projectId: params.alert.projectId
-    },
-    certificates: transformCertificates(params.certificates),
-    metadata: {
-      totalCertificates: params.certificates.length,
-      viewUrl: `${params.appUrl}/projects/cert-manager/${params.alert.projectId}/policies`
-    }
-  }
-});
+// Maps webhook event types to their CloudEvents subject string
+const WEBHOOK_EVENT_SUBJECT: Record<PkiWebhookEventType, string> = {
+  [PkiWebhookEventType.CERTIFICATE_EXPIRATION]: "certificate-expiration-alert",
+  [PkiWebhookEventType.CERTIFICATE_ISSUANCE]: "certificate-issuance-alert",
+  [PkiWebhookEventType.CERTIFICATE_RENEWAL]: "certificate-renewal-alert",
+  [PkiWebhookEventType.CERTIFICATE_REVOCATION]: "certificate-revocation-alert",
+  [PkiWebhookEventType.CERTIFICATE_TEST]: "certificate-test"
+};
 
-const buildCertificateTestEventData = (params: {
+const buildEventData = (params: {
   alert: TAlertInfo;
   certificates: TCertificatePreview[];
   appUrl: string;
+  eventType: PkiWebhookEventType;
 }): TBaseEventPayload => ({
-  subject: "certificate-test",
+  subject: WEBHOOK_EVENT_SUBJECT[params.eventType],
   data: {
     alert: {
       id: params.alert.id,
       name: params.alert.name,
-      alertBefore: params.alert.alertBefore,
+      ...(params.alert.alertBefore ? { alertBefore: params.alert.alertBefore } : {}),
       projectId: params.alert.projectId
     },
     certificates: transformCertificates(params.certificates),
@@ -133,18 +126,7 @@ export const buildWebhookPayload = ({
     alertId: alert.id
   });
 
-  const eventParams = { alert, certificates, appUrl };
-
-  const eventData = (() => {
-    switch (eventType) {
-      case PkiWebhookEventType.CERTIFICATE_EXPIRATION:
-        return buildCertificateExpirationEventData(eventParams);
-      case PkiWebhookEventType.CERTIFICATE_TEST:
-        return buildCertificateTestEventData(eventParams);
-      default:
-        throw new Error(`Unknown PKI webhook event type: ${eventType as string}`);
-    }
-  })();
+  const eventData = buildEventData({ alert, certificates, appUrl, eventType });
 
   return { ...base, ...eventData };
 };
@@ -183,6 +165,7 @@ const triggerPkiWebhookWithRetry = async (params: {
   url: string;
   payload: TPkiWebhookPayload;
   signingSecret?: string;
+  channelId: string;
 }): Promise<TChannelResult> => {
   const { maxRetries, delayMs } = PKI_ALERT_RETRY_CONFIG;
   let lastError: AxiosError | undefined;
@@ -197,14 +180,20 @@ const triggerPkiWebhookWithRetry = async (params: {
 
       if (!isWebhookErrorRetryable(lastError)) {
         logger.info(
-          { url: params.url, statusCode: lastError.response?.status, error: lastError.message },
+          { channelId: params.channelId, statusCode: lastError.response?.status, error: lastError.message },
           "PKI webhook error is not retryable (4xx or non-transient error)"
         );
         return { success: false, error: lastError.message };
       }
 
       logger.info(
-        { url: params.url, attempt, maxRetries, statusCode: lastError.response?.status, error: lastError.message },
+        {
+          channelId: params.channelId,
+          attempt,
+          maxRetries,
+          statusCode: lastError.response?.status,
+          error: lastError.message
+        },
         `PKI webhook failed, ${attempt < maxRetries ? `retrying in ${delayMs}ms` : "no more retries"}`
       );
 
@@ -222,7 +211,8 @@ export const sendWebhookNotification = async (
   config: TWebhookChannelConfig,
   alertData: TAlertInfo,
   matchingCertificates: TCertificatePreview[],
-  eventType: PkiWebhookEventType
+  eventType: PkiWebhookEventType,
+  channelId: string
 ): Promise<TChannelResult> => {
   await blockLocalAndPrivateIpAddresses(config.url);
 
@@ -237,6 +227,7 @@ export const sendWebhookNotification = async (
   return triggerPkiWebhookWithRetry({
     url: config.url,
     payload,
-    signingSecret: config.signingSecret ?? undefined
+    signingSecret: config.signingSecret ?? undefined,
+    channelId
   });
 };

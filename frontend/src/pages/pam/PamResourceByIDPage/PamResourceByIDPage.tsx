@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Helmet } from "react-helmet";
 import { faChevronLeft } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { useNavigate, useParams } from "@tanstack/react-router";
+import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { BanIcon, EllipsisVerticalIcon } from "lucide-react";
 
 import { createNotification } from "@app/components/notifications";
@@ -24,14 +24,22 @@ import {
   PAM_RESOURCE_TYPE_MAP,
   PamResourceType,
   useDeletePamResource,
-  useGetPamResourceById
+  useGetPamResourceById,
+  useUpdatePamResource
 } from "@app/hooks/api/pam";
 
 import { PamUpdateResourceModal } from "../PamResourcesPage/components/PamUpdateResourceModal";
 import {
   PamResourceAccountsSection,
   PamResourceConnectionSection,
-  PamResourceDetailsSection
+  PamResourceDependenciesSection,
+  PamResourceDetailsSection,
+  PamResourceMetadataSection,
+  PamResourceRelatedResourcesSection,
+  PamResourceRotationPolicySection,
+  PamResourceSessionRecordingSection,
+  PamRotationPolicyModal,
+  PamSessionRecordingModal
 } from "./components";
 
 const PageContent = () => {
@@ -43,8 +51,28 @@ const PageContent = () => {
 
   const { resourceId, resourceType, projectId } = params;
 
+  const selectedTab = useSearch({
+    strict: false,
+    select: (el) => el.selectedTab
+  });
+
+  const handleTabChange = (tab: string) => {
+    navigate({
+      to: "/organizations/$orgId/projects/pam/$projectId/resources/$resourceType/$resourceId",
+      search: (prev) => ({ ...prev, selectedTab: tab }),
+      params: {
+        orgId: currentOrg.id,
+        projectId: projectId!,
+        resourceType: resourceType!,
+        resourceId: resourceId!
+      }
+    });
+  };
+
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [isRotationPolicyModalOpen, setIsRotationPolicyModalOpen] = useState(false);
+  const [isSessionRecordingModalOpen, setIsSessionRecordingModalOpen] = useState(false);
 
   const { data: resource, isPending } = useGetPamResourceById(
     resourceType as PamResourceType,
@@ -55,6 +83,7 @@ const PageContent = () => {
   );
 
   const deleteResource = useDeletePamResource();
+  const updateResource = useUpdatePamResource();
 
   if (isPending) {
     return <UnstablePageLoader />;
@@ -173,23 +202,50 @@ const PageContent = () => {
 
       <div className="flex gap-6">
         {/* Left Column */}
-        <div className="flex w-80 flex-col gap-4">
+        <div className="flex w-80 shrink-0 flex-col gap-4">
           <PamResourceDetailsSection resource={resource} onEdit={() => setIsEditModalOpen(true)} />
           <PamResourceConnectionSection
             resource={resource}
             onEdit={() => setIsEditModalOpen(true)}
           />
+          <PamResourceRotationPolicySection
+            resource={resource}
+            onEdit={() => setIsRotationPolicyModalOpen(true)}
+          />
+          {[PamResourceType.Postgres, PamResourceType.SSH].includes(resource.resourceType) && (
+            <PamResourceSessionRecordingSection
+              config={resource.sessionSummaryConfig ?? null}
+              onEdit={() => setIsSessionRecordingModalOpen(true)}
+            />
+          )}
+          <PamResourceMetadataSection resource={resource} />
         </div>
 
         {/* Right Column - Tabbed Content */}
-        <div className="flex-1">
-          <Tabs defaultValue="accounts">
+        <div className="min-w-0 flex-1">
+          <Tabs value={selectedTab} onValueChange={handleTabChange}>
             <TabList>
               <Tab value="accounts">Accounts</Tab>
+              {resource.resourceType === PamResourceType.Windows && (
+                <Tab value="dependencies">Dependencies</Tab>
+              )}
+              {resource.resourceType === PamResourceType.ActiveDirectory && (
+                <Tab value="related-resources">Related Resources</Tab>
+              )}
             </TabList>
             <TabPanel value="accounts">
               <PamResourceAccountsSection resource={resource} />
             </TabPanel>
+            {resource.resourceType === PamResourceType.Windows && (
+              <TabPanel value="dependencies">
+                <PamResourceDependenciesSection resource={resource} />
+              </TabPanel>
+            )}
+            {resource.resourceType === PamResourceType.ActiveDirectory && (
+              <TabPanel value="related-resources">
+                <PamResourceRelatedResourcesSection resource={resource} />
+              </TabPanel>
+            )}
           </Tabs>
         </div>
       </div>
@@ -207,6 +263,27 @@ const PageContent = () => {
         deleteKey={resource.name}
         onDeleteApproved={handleDeleteConfirm}
       />
+
+      <PamRotationPolicyModal
+        isOpen={isRotationPolicyModalOpen}
+        onOpenChange={setIsRotationPolicyModalOpen}
+        resource={resource}
+      />
+
+      {[PamResourceType.Postgres, PamResourceType.SSH].includes(resource.resourceType) && (
+        <PamSessionRecordingModal
+          isOpen={isSessionRecordingModalOpen}
+          onOpenChange={setIsSessionRecordingModalOpen}
+          config={resource.sessionSummaryConfig ?? null}
+          onSave={async (config) => {
+            await updateResource.mutateAsync({
+              resourceId: resource.id,
+              resourceType: resource.resourceType,
+              sessionSummaryConfig: config
+            });
+          }}
+        />
+      )}
     </div>
   );
 };

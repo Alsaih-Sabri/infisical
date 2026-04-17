@@ -2,9 +2,18 @@ import { useState } from "react";
 import { Helmet } from "react-helmet";
 import { faChevronLeft } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { useNavigate, useParams } from "@tanstack/react-router";
-import { BanIcon, EllipsisVerticalIcon, LogInIcon } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import {
+  BanIcon,
+  EllipsisVerticalIcon,
+  LogInIcon,
+  PencilIcon,
+  RefreshCwIcon,
+  Trash2Icon
+} from "lucide-react";
 
+import { createNotification } from "@app/components/notifications";
 import { ProjectPermissionCan } from "@app/components/permissions";
 import { Tab, TabList, TabPanel, Tabs } from "@app/components/v2";
 import {
@@ -22,7 +31,15 @@ import { ProjectPermissionSub, useOrganization } from "@app/context";
 import { ProjectPermissionPamAccountActions } from "@app/context/ProjectPermissionContext/types";
 import { usePopUp } from "@app/hooks";
 import { ApprovalPolicyType, useCheckPolicyMatch } from "@app/hooks/api/approvalPolicies";
-import { PAM_RESOURCE_TYPE_MAP, PamResourceType, useGetPamAccountById } from "@app/hooks/api/pam";
+import {
+  PAM_RESOURCE_TYPE_MAP,
+  PamAccountRotationStatus,
+  PamResourceType,
+  TPamAccount,
+  useGetPamAccountById
+} from "@app/hooks/api/pam";
+import { useManualRotateAccount } from "@app/hooks/api/pam/mutations";
+import { pamKeys } from "@app/hooks/api/pam/queries";
 
 import { PamAccessAccountModal } from "../PamAccountsPage/components/PamAccessAccountModal";
 import { PamDeleteAccountModal } from "../PamAccountsPage/components/PamDeleteAccountModal";
@@ -31,7 +48,10 @@ import { PamUpdateAccountModal } from "../PamAccountsPage/components/PamUpdateAc
 import { useAccessAwsIamAccount } from "../PamAccountsPage/components/useAccessAwsIamAccount";
 import {
   PamAccountCredentialsSection,
+  PamAccountDependenciesSection,
   PamAccountDetailsSection,
+  PamAccountMetadataSection,
+  PamAccountPropertiesSection,
   PamAccountResourcesSection
 } from "./components";
 
@@ -50,6 +70,25 @@ const PageContent = () => {
 
   const { accountId, projectId, resourceType, resourceId } = params;
 
+  const selectedTab = useSearch({
+    strict: false,
+    select: (el) => el.selectedTab
+  });
+
+  const handleTabChange = (tab: string) => {
+    navigate({
+      to: "/organizations/$orgId/projects/pam/$projectId/resources/$resourceType/$resourceId/accounts/$accountId",
+      search: (prev) => ({ ...prev, selectedTab: tab }),
+      params: {
+        orgId: currentOrg.id,
+        projectId: projectId!,
+        resourceType: resourceType!,
+        resourceId: resourceId!,
+        accountId: accountId!
+      }
+    });
+  };
+
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
 
   const { popUp, handlePopUpOpen, handlePopUpToggle } = usePopUp([
@@ -58,8 +97,10 @@ const PageContent = () => {
     "deleteAccount"
   ] as const);
 
+  const queryClient = useQueryClient();
   const { accessAwsIam, isPending: isAwsAccessPending } = useAccessAwsIamAccount();
   const { mutateAsync: checkPolicyMatch } = useCheckPolicyMatch();
+  const rotateAccount = useManualRotateAccount();
 
   const { data: account, isPending } = useGetPamAccountById(accountId);
 
@@ -97,25 +138,54 @@ const PageContent = () => {
   };
 
   const handleAccess = async () => {
-    const fullAccountPath = `/${account.name}`;
-
     const { requiresApproval } = await checkPolicyMatch({
       policyType: ApprovalPolicyType.PamAccess,
       projectId: projectId!,
       inputs: {
-        accountPath: fullAccountPath
+        resourceName: account.resource.name,
+        accountName: account.name
       }
     });
 
     if (requiresApproval) {
-      handlePopUpOpen("requestAccount", { accountPath: fullAccountPath, accountAccessed: true });
+      handlePopUpOpen("requestAccount", {
+        resourceName: account.resource.name,
+        accountName: account.name,
+        accountAccessed: true
+      });
       return;
     }
 
     if (account.resource.resourceType === PamResourceType.AwsIam) {
-      accessAwsIam(account, fullAccountPath);
+      accessAwsIam(account);
     } else {
-      handlePopUpOpen("accessAccount", { account, accountPath: undefined });
+      handlePopUpOpen("accessAccount", { account });
+    }
+  };
+
+  const handleRotate = async () => {
+    // Optimistically show rotating status immediately
+    queryClient.setQueryData(pamKeys.getAccount(account.id), (old: TPamAccount | undefined) =>
+      old ? { ...old, rotationStatus: PamAccountRotationStatus.Rotating } : old
+    );
+
+    try {
+      const updatedAccount = await rotateAccount.mutateAsync({ accountId: account.id });
+
+      if (updatedAccount.rotationStatus === PamAccountRotationStatus.Success) {
+        createNotification({ text: "Credential rotation completed successfully", type: "success" });
+      } else if (updatedAccount.rotationStatus === PamAccountRotationStatus.PartialSuccess) {
+        createNotification({
+          text: "Credential rotation completed with warnings",
+          type: "warning"
+        });
+      } else if (updatedAccount.rotationStatus === PamAccountRotationStatus.Failed) {
+        createNotification({ text: "Credential rotation failed", type: "error" });
+      }
+    } catch {
+      // Revert optimistic update on failure
+      queryClient.invalidateQueries({ queryKey: pamKeys.getAccount(account.id) });
+      createNotification({ text: "Failed to trigger rotation", type: "error" });
     }
   };
 
@@ -147,15 +217,20 @@ const PageContent = () => {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <ProjectPermissionCan
-            I={ProjectPermissionPamAccountActions.Access}
-            a={ProjectPermissionSub.PamAccounts}
-          >
-            <Button variant="neutral" onClick={handleAccess} isPending={isAwsAccessPending}>
-              <LogInIcon />
-              Access
-            </Button>
-          </ProjectPermissionCan>
+          {/* Windows Server accounts cannot be accessed temporarily */}
+          {/* Active Directory accounts cannot be accessed */}
+          {account.resource.resourceType !== PamResourceType.Windows &&
+            account.resource.resourceType !== PamResourceType.ActiveDirectory && (
+              <ProjectPermissionCan
+                I={ProjectPermissionPamAccountActions.Access}
+                a={ProjectPermissionSub.PamAccounts}
+              >
+                <Button variant="neutral" onClick={handleAccess} isPending={isAwsAccessPending}>
+                  <LogInIcon />
+                  Access
+                </Button>
+              </ProjectPermissionCan>
+            )}
           <UnstableDropdownMenu>
             <UnstableDropdownMenuTrigger asChild>
               <Button variant="outline" size="sm">
@@ -172,10 +247,29 @@ const PageContent = () => {
                     onClick={() => setIsEditModalOpen(true)}
                     isDisabled={!isAllowed}
                   >
+                    <PencilIcon className="size-3.5" />
                     Edit Account
                   </UnstableDropdownMenuItem>
                 )}
               </ProjectPermissionCan>
+              {account.resource.rotationCredentialsConfigured && (
+                <ProjectPermissionCan
+                  I={ProjectPermissionPamAccountActions.TriggerRotation}
+                  a={ProjectPermissionSub.PamAccounts}
+                >
+                  {(isAllowed) => (
+                    <UnstableDropdownMenuItem
+                      onClick={handleRotate}
+                      isDisabled={
+                        !isAllowed || account.rotationStatus === PamAccountRotationStatus.Rotating
+                      }
+                    >
+                      <RefreshCwIcon className="size-3.5" />
+                      Rotate Account
+                    </UnstableDropdownMenuItem>
+                  )}
+                </ProjectPermissionCan>
+              )}
               <ProjectPermissionCan
                 I={ProjectPermissionPamAccountActions.Delete}
                 a={ProjectPermissionSub.PamAccounts}
@@ -186,6 +280,7 @@ const PageContent = () => {
                     variant="danger"
                     isDisabled={!isAllowed}
                   >
+                    <Trash2Icon className="size-3.5" />
                     Delete Account
                   </UnstableDropdownMenuItem>
                 )}
@@ -197,19 +292,25 @@ const PageContent = () => {
 
       <div className="flex gap-6">
         {/* Left Column */}
-        <div className="flex w-80 flex-col gap-4">
+        <div className="flex w-80 shrink-0 flex-col gap-4">
           <PamAccountDetailsSection account={account} onEdit={() => setIsEditModalOpen(true)} />
           <PamAccountCredentialsSection account={account} onEdit={() => setIsEditModalOpen(true)} />
+          <PamAccountPropertiesSection account={account} />
+          <PamAccountMetadataSection account={account} />
         </div>
 
         {/* Right Column - Tabbed Content */}
-        <div className="flex-1">
-          <Tabs defaultValue="resources">
+        <div className="min-w-0 flex-1">
+          <Tabs value={selectedTab} onValueChange={handleTabChange}>
             <TabList>
               <Tab value="resources">Resources</Tab>
+              <Tab value="dependencies">Dependencies</Tab>
             </TabList>
             <TabPanel value="resources">
               <PamAccountResourcesSection account={account} onAccessResource={handleAccess} />
+            </TabPanel>
+            <TabPanel value="dependencies">
+              <PamAccountDependenciesSection account={account} />
             </TabPanel>
           </Tabs>
         </div>
@@ -225,14 +326,14 @@ const PageContent = () => {
         isOpen={popUp.accessAccount.isOpen}
         onOpenChange={(isOpen) => handlePopUpToggle("accessAccount", isOpen)}
         account={popUp.accessAccount.data?.account}
-        accountPath={popUp.accessAccount.data?.accountPath}
         projectId={projectId!}
       />
 
       <PamRequestAccountAccessModal
         isOpen={popUp.requestAccount.isOpen}
         onOpenChange={(isOpen) => handlePopUpToggle("requestAccount", isOpen)}
-        accountPath={popUp.requestAccount.data?.accountPath}
+        resourceName={popUp.requestAccount.data?.resourceName}
+        accountName={popUp.requestAccount.data?.accountName}
         accountAccessed={popUp.requestAccount.data?.accountAccessed}
       />
 

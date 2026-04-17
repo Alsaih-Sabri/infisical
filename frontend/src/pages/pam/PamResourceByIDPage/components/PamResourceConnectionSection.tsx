@@ -5,7 +5,7 @@ import { ProjectPermissionCan } from "@app/components/permissions";
 import { Detail, DetailLabel, DetailValue, UnstableIconButton } from "@app/components/v3";
 import { ProjectPermissionActions, ProjectPermissionSub } from "@app/context";
 import { gatewaysQueryKeys } from "@app/hooks/api";
-import { PamResourceType, TPamResource } from "@app/hooks/api/pam";
+import { PamResourceType, TPamResource, useGetPamResourceById } from "@app/hooks/api/pam";
 
 type Props = {
   resource: TPamResource;
@@ -25,16 +25,41 @@ const SSLStatusBadge = ({ enabled }: { enabled: boolean }) => (
 const SqlConnectionDetails = ({
   connectionDetails
 }: {
-  connectionDetails: { host: string; port: number; database: string; sslEnabled: boolean };
+  connectionDetails: { host: string; port?: number; database: string; sslEnabled: boolean };
 }) => (
   <>
     <Detail>
       <DetailLabel>Host</DetailLabel>
       <DetailValue>{connectionDetails.host}</DetailValue>
     </Detail>
+    {connectionDetails.port != null && (
+      <Detail>
+        <DetailLabel>Port</DetailLabel>
+        <DetailValue>{connectionDetails.port}</DetailValue>
+      </Detail>
+    )}
     <Detail>
-      <DetailLabel>Port</DetailLabel>
-      <DetailValue>{connectionDetails.port}</DetailValue>
+      <DetailLabel>Database</DetailLabel>
+      <DetailValue>{connectionDetails.database}</DetailValue>
+    </Detail>
+    <Detail>
+      <DetailLabel>SSL</DetailLabel>
+      <DetailValue>
+        <SSLStatusBadge enabled={connectionDetails.sslEnabled} />
+      </DetailValue>
+    </Detail>
+  </>
+);
+
+const MongoDBConnectionDetails = ({
+  connectionDetails
+}: {
+  connectionDetails: { connectionString: string; database: string; sslEnabled: boolean };
+}) => (
+  <>
+    <Detail>
+      <DetailLabel>Connection String</DetailLabel>
+      <DetailValue>{connectionDetails.connectionString}</DetailValue>
     </Detail>
     <Detail>
       <DetailLabel>Database</DetailLabel>
@@ -126,11 +151,72 @@ const AwsIamConnectionDetails = ({
   </Detail>
 );
 
+const WindowsConnectionDetails = ({
+  connectionDetails,
+  adServerResourceId
+}: {
+  connectionDetails: { protocol: string; hostname: string; port: number };
+  adServerResourceId?: string | null;
+}) => {
+  const { data: adResource } = useGetPamResourceById(
+    PamResourceType.ActiveDirectory,
+    adServerResourceId || undefined,
+    { enabled: !!adServerResourceId }
+  );
+
+  return (
+    <>
+      <Detail>
+        <DetailLabel>Protocol</DetailLabel>
+        <DetailValue>{connectionDetails.protocol.toUpperCase()}</DetailValue>
+      </Detail>
+      <Detail>
+        <DetailLabel>Hostname</DetailLabel>
+        <DetailValue>{connectionDetails.hostname}</DetailValue>
+      </Detail>
+      <Detail>
+        <DetailLabel>Port</DetailLabel>
+        <DetailValue>{connectionDetails.port}</DetailValue>
+      </Detail>
+      {adResource && (
+        <Detail>
+          <DetailLabel>AD Resource</DetailLabel>
+          <DetailValue>{adResource.name}</DetailValue>
+        </Detail>
+      )}
+    </>
+  );
+};
+
+const ActiveDirectoryConnectionDetails = ({
+  connectionDetails
+}: {
+  connectionDetails: { domain: string; dcAddress: string; port: number };
+}) => (
+  <>
+    <Detail>
+      <DetailLabel>Domain</DetailLabel>
+      <DetailValue>{connectionDetails.domain}</DetailValue>
+    </Detail>
+    <Detail>
+      <DetailLabel>DC Address</DetailLabel>
+      <DetailValue>{connectionDetails.dcAddress}</DetailValue>
+    </Detail>
+    <Detail>
+      <DetailLabel>Port</DetailLabel>
+      <DetailValue>{connectionDetails.port}</DetailValue>
+    </Detail>
+  </>
+);
+
 const ConnectionDetailsContent = ({ resource }: Props) => {
   switch (resource.resourceType) {
     case PamResourceType.Postgres:
     case PamResourceType.MySQL:
+    case PamResourceType.MsSQL:
       return <SqlConnectionDetails connectionDetails={resource.connectionDetails} />;
+    case PamResourceType.MongoDB:
+      return <MongoDBConnectionDetails connectionDetails={resource.connectionDetails} />;
     case PamResourceType.SSH:
       return <SSHConnectionDetails connectionDetails={resource.connectionDetails} />;
     case PamResourceType.Redis:
@@ -139,6 +225,15 @@ const ConnectionDetailsContent = ({ resource }: Props) => {
       return <KubernetesConnectionDetails connectionDetails={resource.connectionDetails} />;
     case PamResourceType.AwsIam:
       return <AwsIamConnectionDetails connectionDetails={resource.connectionDetails} />;
+    case PamResourceType.Windows:
+      return (
+        <WindowsConnectionDetails
+          connectionDetails={resource.connectionDetails}
+          adServerResourceId={resource.adServerResourceId}
+        />
+      );
+    case PamResourceType.ActiveDirectory:
+      return <ActiveDirectoryConnectionDetails connectionDetails={resource.connectionDetails} />;
     default:
       return null;
   }

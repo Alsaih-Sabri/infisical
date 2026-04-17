@@ -1,4 +1,4 @@
-import { CertExtendedKeyUsage, CertKeyUsage, CertStatus } from "./enums";
+import { CertExtendedKeyUsage, CertKeyUsage, CertSource, CertStatus } from "./enums";
 
 export type TCertificateSubject = {
   commonName?: string;
@@ -11,8 +11,10 @@ export type TCertificateSubject = {
 
 export type TCertificateFingerprints = {
   sha256: string;
-  sha1: string;
+  sha1?: string;
 };
+
+export type TCertificateSource = CertSource | null;
 
 export type TCertificate = {
   id: string;
@@ -45,7 +47,15 @@ export type TCertificate = {
   };
   caName?: string | null;
   profileName?: string | null;
+  enrollmentType?: string | null;
   caType?: "internal" | "external" | null;
+  source?: TCertificateSource;
+  discoveryMetadata?: {
+    issuerCommonName?: string;
+    issuerOrganization?: string;
+    [key: string]: unknown;
+  } | null;
+  metadata?: Array<{ key: string; value: string }>;
 };
 
 export type TCertificateByIdResponse = {
@@ -116,7 +126,12 @@ export type TUnifiedCertificateIssuanceDTO = {
   projectId: string;
   csr?: string;
   attributes?: {
-    commonName?: string;
+    commonName?: string | null;
+    organization?: string | null;
+    organizationUnit?: string | null;
+    country?: string | null;
+    state?: string | null;
+    locality?: string | null;
     keyUsages?: string[];
     extendedKeyUsages?: string[];
     altNames?: Array<{
@@ -134,6 +149,7 @@ export type TUnifiedCertificateIssuanceDTO = {
     notAfter?: string;
   };
   removeRootsFromChain?: boolean;
+  metadata?: Array<{ key: string; value: string }>;
 };
 
 export type TUnifiedCertificateResponse = {
@@ -177,6 +193,13 @@ export type TCertificateRequestDetails = {
   } | null;
   createdAt: string;
   updatedAt: string;
+  metadata?: Array<{ key: string; value: string }>;
+};
+
+export type TUpdateCertificateDTO = {
+  certificateId: string;
+  projectId: string;
+  metadata: Array<{ key: string; value: string }>;
 };
 
 export type TCertificateRequestListItem = {
@@ -215,4 +238,48 @@ export type TListCertificateRequestsParams = {
   profileIds?: string[];
   sortBy?: string;
   sortOrder?: "asc" | "desc";
+  metadataFilter?: Array<{ key: string; value?: string }>;
+};
+
+export type TDashboardDistribution = {
+  id?: string;
+  label: string;
+  count: number;
+};
+
+export type TExpirationBucket = {
+  bucket: string;
+  count: number;
+};
+
+export type TDashboardStats = {
+  totals: {
+    total: number;
+    active: number;
+    expiringSoon: number;
+    expired: number;
+    revoked: number;
+  };
+  expiringSoonNoAutoRenewal: number;
+  expiredNotRenewed: number;
+  distributions: {
+    byEnrollmentMethod: TDashboardDistribution[];
+    byAlgorithm: TDashboardDistribution[];
+    byCA: TDashboardDistribution[];
+    byStatus: TDashboardDistribution[];
+  };
+  expirationBuckets: TExpirationBucket[];
+  validityBuckets?: TExpirationBucket[];
+};
+
+export type TActivityTrendPoint = {
+  period: string;
+  issued: number;
+  expired: number;
+  revoked: number;
+  renewed: number;
+};
+
+export type TActivityTrendResponse = {
+  periods: TActivityTrendPoint[];
 };

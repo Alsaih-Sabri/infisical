@@ -16,6 +16,7 @@ import {
   TRevokeCertDTO,
   TUnifiedCertificateIssuanceDTO,
   TUnifiedCertificateIssuanceResponse,
+  TUpdateCertificateDTO,
   TUpdateRenewalConfigDTO
 } from "./types";
 
@@ -45,6 +46,9 @@ export const useDeleteCert = () => {
       });
       queryClient.invalidateQueries({
         queryKey: projectKeys.forProjectCertificates(projectId)
+      });
+      queryClient.invalidateQueries({
+        queryKey: certKeys.getDashboardStats(projectId)
       });
     }
   });
@@ -80,6 +84,9 @@ export const useRevokeCert = () => {
       queryClient.invalidateQueries({
         queryKey: projectKeys.forProjectCertificates(projectId)
       });
+      queryClient.invalidateQueries({
+        queryKey: certKeys.getDashboardStats(projectId)
+      });
     }
   });
 };
@@ -97,6 +104,9 @@ export const useImportCertificate = () => {
     onSuccess: (_, { projectSlug }) => {
       queryClient.invalidateQueries({
         queryKey: projectKeys.forProjectCertificates(projectSlug)
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["cert-dashboard-stats"]
       });
     }
   });
@@ -128,6 +138,9 @@ export const useRenewCertificate = () => {
       if (data.projectId) {
         queryClient.invalidateQueries({
           queryKey: projectKeys.forProjectCertificates(data.projectId)
+        });
+        queryClient.invalidateQueries({
+          queryKey: certKeys.getDashboardStats(data.projectId)
         });
       }
     }
@@ -201,6 +214,33 @@ export const useDownloadCertPkcs12 = () => {
   });
 };
 
+export const useUpdateCertificate = () => {
+  const queryClient = useQueryClient();
+  return useMutation<
+    { metadata: Array<{ key: string; value: string }> },
+    object,
+    TUpdateCertificateDTO
+  >({
+    mutationFn: async ({ certificateId, metadata }) => {
+      const { data } = await apiRequest.patch<{
+        metadata: Array<{ key: string; value: string }>;
+      }>(`/api/v1/cert-manager/certificates/${certificateId}`, { metadata });
+      return data;
+    },
+    onSuccess: (_, { certificateId, projectId }) => {
+      queryClient.invalidateQueries({
+        queryKey: certKeys.getCertificateById(certificateId)
+      });
+      queryClient.invalidateQueries({
+        queryKey: projectKeys.allProjectCertificates()
+      });
+      queryClient.invalidateQueries({
+        queryKey: projectKeys.forProjectCertificates(projectId)
+      });
+    }
+  });
+};
+
 export const useUnifiedCertificateIssuance = () => {
   const queryClient = useQueryClient();
   return useMutation<TUnifiedCertificateIssuanceResponse, object, TUnifiedCertificateIssuanceDTO>({
@@ -227,6 +267,9 @@ export const useUnifiedCertificateIssuance = () => {
       });
       queryClient.invalidateQueries({
         queryKey: ["certificateRequests", "list", projectSlug]
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["cert-dashboard-stats"]
       });
     }
   });

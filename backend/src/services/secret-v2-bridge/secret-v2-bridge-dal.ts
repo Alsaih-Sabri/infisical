@@ -4,7 +4,7 @@ import { validate as uuidValidate } from "uuid";
 
 import { TDbClient } from "@app/db";
 import { ProjectType, SecretsV2Schema, SecretType, TableName, TSecretsV2, TSecretsV2Update } from "@app/db/schemas";
-import { TKeyStoreFactory } from "@app/keystore/keystore";
+import { KeyStorePrefixes, TKeyStoreFactory } from "@app/keystore/keystore";
 import { generateCacheKeyFromData } from "@app/lib/crypto/cache";
 import { applyJitter } from "@app/lib/dates";
 import { BadRequestError, DatabaseError, NotFoundError } from "@app/lib/errors";
@@ -56,6 +56,7 @@ export const secretV2BridgeDALFactory = ({ db, keyStore }: TSecretV2DalArg) => {
   const invalidateSecretCacheByProjectId = async (projectId: string, tx?: Knex) => {
     const secretDalVersionKey = SecretServiceCacheKeys.getSecretDalVersion(projectId);
     await keyStore.pgIncrementBy(secretDalVersionKey, { incr: 1, tx, expiry: SECRET_DAL_VERSION_TTL });
+    await keyStore.deleteItem(KeyStorePrefixes.SecretEtag(projectId));
   };
 
   const findOne = async (filter: Partial<TSecretsV2>, tx?: Knex) => {
@@ -245,20 +246,61 @@ export const secretV2BridgeDALFactory = ({ db, keyStore }: TSecretV2DalArg) => {
     tx?: Knex
   ) => {
     try {
-      const secs = await Promise.all(
-        data.map(async ({ filter, data: updateData }) => {
-          const [doc] = await (tx || db)(TableName.SecretV2)
-            .where(filter)
-            .update(updateData)
-            .increment("version", 1)
-            .returning("*");
-          if (!doc) throw new BadRequestError({ message: "Failed to update document" });
-          return doc;
-        })
-      );
+      const secs: TSecretsV2[] = [];
+
+      for await (const { filter, data: updateData } of data) {
+        const [doc] = await (tx || db)(TableName.SecretV2)
+          .where(filter)
+          .update(updateData)
+          .increment("version", 1)
+          .returning("*");
+        if (!doc) throw new BadRequestError({ message: "Failed to update document" });
+        secs.push(doc);
+      }
+
       return secs;
     } catch (error) {
       throw new DatabaseError({ error, name: "bulk update secret" });
+    }
+  };
+
+  const bulkUpdateById = async (
+    data: Array<{ filter: Pick<TSecretsV2, "id"> & Partial<TSecretsV2>; data: TSecretsV2Update }>,
+    tx?: Knex
+  ) => {
+    try {
+      if (data.length === 0) return [];
+
+      const ids = data.map(({ filter }) => filter.id);
+
+      const existingSecrets = await (tx || db)(TableName.SecretV2).whereIn("id", ids).select("*");
+
+      const existingById = new Map(existingSecrets.map((s) => [s.id, s]));
+
+      const rowsToUpsert = data.map(({ filter, data: updateData }) => {
+        const existing = existingById.get(filter.id);
+        if (!existing) throw new BadRequestError({ message: "Failed to update document" });
+
+        return {
+          ...existing,
+          ...updateData,
+          version: existing.version + 1
+        };
+      });
+
+      const updatedSecrets = await (tx || db)(TableName.SecretV2)
+        .insert(rowsToUpsert)
+        .onConflict("id")
+        .merge()
+        .returning("*");
+
+      if (updatedSecrets.length !== data.length) {
+        throw new BadRequestError({ message: "Failed to update some documents" });
+      }
+
+      return updatedSecrets;
+    } catch (error) {
+      throw new DatabaseError({ error, name: "bulk update secret by id" });
     }
   };
 
@@ -1086,10 +1128,57 @@ export const secretV2BridgeDALFactory = ({ db, keyStore }: TSecretV2DalArg) => {
     }
   };
 
+  const findStaleByProject = async (
+    projectId: string,
+    staleBeforeDate: Date,
+    pagination?: { offset: number; limit: number },
+    tx?: Knex
+  ) => {
+    try {
+      const result = await (tx || db.replicaNode())(TableName.SecretV2)
+        .join(TableName.SecretFolder, `${TableName.SecretV2}.folderId`, `${TableName.SecretFolder}.id`)
+        .join(TableName.Environment, `${TableName.SecretFolder}.envId`, `${TableName.Environment}.id`)
+        .where(`${TableName.Environment}.projectId`, projectId)
+        .whereNull(`${TableName.SecretV2}.userId`)
+        .where(`${TableName.SecretV2}.updatedAt`, "<", staleBeforeDate)
+        .select(
+          `${TableName.SecretV2}.key`,
+          `${TableName.SecretV2}.updatedAt`,
+          `${TableName.SecretV2}.folderId`,
+          `${TableName.Environment}.slug as environment`
+        )
+        .orderBy(`${TableName.SecretV2}.updatedAt`, "asc")
+        .offset(pagination?.offset ?? 0)
+        .limit(pagination?.limit ?? 50);
+
+      return result as { key: string; updatedAt: Date; folderId: string; environment: string }[];
+    } catch (error) {
+      throw new DatabaseError({ error, name: "findStaleByProject" });
+    }
+  };
+
+  const countStaleByProject = async (projectId: string, staleBeforeDate: Date, tx?: Knex) => {
+    try {
+      const result = await (tx || db.replicaNode())(TableName.SecretV2)
+        .join(TableName.SecretFolder, `${TableName.SecretV2}.folderId`, `${TableName.SecretFolder}.id`)
+        .join(TableName.Environment, `${TableName.SecretFolder}.envId`, `${TableName.Environment}.id`)
+        .where(`${TableName.Environment}.projectId`, projectId)
+        .whereNull(`${TableName.SecretV2}.userId`)
+        .where(`${TableName.SecretV2}.updatedAt`, "<", staleBeforeDate)
+        .count("* as count")
+        .first();
+
+      return Number((result as { count?: string | number })?.count ?? 0);
+    } catch (error) {
+      throw new DatabaseError({ error, name: "countStaleByProject" });
+    }
+  };
+
   return {
     ...secretOrm,
     update,
     bulkUpdate,
+    bulkUpdateById,
     deleteMany,
     bulkUpdateNoVersionIncrement,
     getSecretTags,
@@ -1101,6 +1190,8 @@ export const secretV2BridgeDALFactory = ({ db, keyStore }: TSecretV2DalArg) => {
     findReferencedSecretReferences,
     findAllProjectSecretValues,
     countByFolderIds,
+    findStaleByProject,
+    countStaleByProject,
     findOne,
     find,
     invalidateSecretCacheByProjectId,

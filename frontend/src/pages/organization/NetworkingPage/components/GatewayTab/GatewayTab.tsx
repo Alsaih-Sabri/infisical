@@ -1,9 +1,12 @@
 import { useState } from "react";
 import {
+  faArrowsRotate,
+  faClock,
   faCopy,
   faDoorClosed,
   faEdit,
   faEllipsisV,
+  faHeartPulse,
   faInfoCircle,
   faMagnifyingGlass,
   faPlus,
@@ -45,20 +48,49 @@ import {
 import { withPermission } from "@app/hoc";
 import { usePopUp } from "@app/hooks";
 import { gatewaysQueryKeys, useDeleteGatewayById } from "@app/hooks/api/gateways";
-import { useDeleteGatewayV2ById } from "@app/hooks/api/gateways-v2";
+import { useDeleteGatewayV2ById, useTriggerGatewayV2Heartbeat } from "@app/hooks/api/gateways-v2";
+import { GatewayHealthCheckStatus } from "@app/hooks/api/gateways-v2/types";
 
 import { EditGatewayDetailsModal } from "./components/EditGatewayDetailsModal";
+import { GatewayConnectedResourcesDrawer } from "./components/GatewayConnectedResourcesDrawer";
 import { GatewayDeployModal } from "./components/GatewayDeployModal";
+import { ReEnrollGatewayModal } from "./components/ReEnrollGatewayModal";
 
-const GatewayHealthStatus = ({ heartbeat }: { heartbeat?: string }) => {
+const GatewayHealthStatus = ({
+  heartbeat,
+  lastHealthCheckStatus,
+  isPending
+}: {
+  heartbeat?: string | null;
+  lastHealthCheckStatus?: GatewayHealthCheckStatus | null;
+  isPending?: boolean;
+}) => {
+  if (isPending) {
+    return (
+      <Tooltip content="Waiting for gateway to enroll using the CLI command">
+        <span className="inline-flex cursor-default items-center gap-1.5 text-yellow-500">
+          <FontAwesomeIcon icon={faClock} className="size-3" />
+          Pending
+        </span>
+      </Tooltip>
+    );
+  }
+
+  if (!heartbeat && !lastHealthCheckStatus) {
+    return (
+      <Tooltip content="Gateway has not connected yet">
+        <span className="cursor-default text-yellow-500">Unregistered</span>
+      </Tooltip>
+    );
+  }
+
   const heartbeatDate = heartbeat ? new Date(heartbeat) : null;
-  const now = new Date();
-  const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
 
-  const isHealthy = heartbeatDate && heartbeatDate >= oneHourAgo;
+  const isHealthy = lastHealthCheckStatus === GatewayHealthCheckStatus.Healthy;
+
   const tooltipContent = heartbeatDate
-    ? `Last heartbeat: ${heartbeatDate.toLocaleString()}`
-    : "No heartbeat data available";
+    ? `Last health check: ${heartbeatDate.toLocaleString()}`
+    : "No health check data available";
 
   return (
     <Tooltip content={tooltipContent}>
@@ -69,22 +101,78 @@ const GatewayHealthStatus = ({ heartbeat }: { heartbeat?: string }) => {
   );
 };
 
+type GatewayConnectedCellProps = {
+  isV1: boolean;
+  connectedResourcesCount: number;
+  onClick: () => void;
+};
+
+const GatewayConnectedCell = ({
+  isV1,
+  connectedResourcesCount,
+  onClick
+}: GatewayConnectedCellProps) => {
+  if (isV1 || connectedResourcesCount === 0) {
+    return <span className="text-mineshaft-400">—</span>;
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex cursor-pointer items-center gap-1.5 text-mineshaft-200 underline decoration-mineshaft-400 underline-offset-2 hover:text-mineshaft-100 hover:decoration-mineshaft-300"
+    >
+      <span>
+        {connectedResourcesCount} resource{connectedResourcesCount !== 1 ? "s" : ""}
+      </span>
+    </button>
+  );
+};
+
 export const GatewayTab = withPermission(
   () => {
     const [search, setSearch] = useState("");
-    const { data: gateways, isPending: isGatewaysLoading } = useQuery(gatewaysQueryKeys.list());
+    const [selectedGateway, setSelectedGateway] = useState<{
+      id: string;
+      name: string;
+    } | null>(null);
+    const { data: gateways, isPending: isGatewaysLoading } = useQuery({
+      ...gatewaysQueryKeys.listWithTokens(),
+      refetchInterval: 15_000
+    });
 
     const { popUp, handlePopUpOpen, handlePopUpToggle } = usePopUp([
       "deployGateway",
       "deleteGateway",
-      "editDetails"
+      "editDetails",
+      "connectedResources",
+      "reEnrollGateway"
     ] as const);
 
     const deleteGatewayById = useDeleteGatewayById();
     const deleteGatewayV2ById = useDeleteGatewayV2ById();
+    const triggerGatewayV2Heartbeat = useTriggerGatewayV2Heartbeat();
+
+    const handleTriggerHealthCheck = async (id: string) => {
+      try {
+        await triggerGatewayV2Heartbeat.mutateAsync(id);
+        createNotification({
+          type: "success",
+          text: "Health check successful - gateway is healthy"
+        });
+      } catch {
+        createNotification({
+          type: "error",
+          text: "Health check failed - gateway is unreachable"
+        });
+      }
+    };
 
     const handleDeleteGateway = async () => {
-      const data = popUp.deleteGateway.data as { id: string; isV1: boolean };
+      const data = popUp.deleteGateway.data as {
+        id: string;
+        isV1: boolean;
+      };
       if (data.isV1) {
         await deleteGatewayById.mutateAsync(data.id);
       } else {
@@ -109,13 +197,21 @@ export const GatewayTab = withPermission(
             <h3 className="text-lg font-medium text-mineshaft-100">Gateways</h3>
             <DocumentationLinkBadge href="https://infisical.com/docs/documentation/platform/gateways/overview" />
             <div className="flex grow" />
-            <Button
-              variant="outline_bg"
-              leftIcon={<FontAwesomeIcon icon={faPlus} />}
-              onClick={() => handlePopUpOpen("deployGateway")}
+            <OrgPermissionCan
+              I={OrgGatewayPermissionActions.CreateGateways}
+              a={OrgPermissionSubjects.Gateway}
             >
-              Deploy Gateway
-            </Button>
+              {(isAllowed: boolean) => (
+                <Button
+                  variant="outline_bg"
+                  leftIcon={<FontAwesomeIcon icon={faPlus} />}
+                  onClick={() => handlePopUpOpen("deployGateway")}
+                  isDisabled={!isAllowed}
+                >
+                  Create Gateway
+                </Button>
+              )}
+            </OrgPermissionCan>
           </div>
         </div>
         <p className="mb-4 text-sm text-mineshaft-400">
@@ -135,7 +231,8 @@ export const GatewayTab = withPermission(
             <Table>
               <THead>
                 <Tr>
-                  <Th className="w-1/2">Name</Th>
+                  <Th className="w-1/3">Name</Th>
+                  <Th>Connected</Th>
                   <Th>
                     Health Check
                     <Tooltip
@@ -151,20 +248,58 @@ export const GatewayTab = withPermission(
               </THead>
               <TBody>
                 {isGatewaysLoading && (
-                  <TableSkeleton innerKey="gateway-table" columns={4} key="gateway-table" />
+                  <TableSkeleton innerKey="gateway-table" columns={5} key="gateway-table" />
                 )}
                 {filteredGateway?.map((el) => (
                   <Tr key={el.id}>
                     <Td>
                       <div className="flex items-center gap-2">
                         <span>{el.name}</span>
-                        <span className="rounded-sm bg-mineshaft-700 px-1.5 py-0.5 text-xs text-mineshaft-400">
-                          Gateway v{el.isV1 ? "1" : "2"}
-                        </span>
+                        {(() => {
+                          if (el.isPending) {
+                            return (
+                              <span className="rounded-sm bg-yellow-900/30 px-1.5 py-0.5 text-xs text-yellow-500">
+                                Pending
+                              </span>
+                            );
+                          }
+                          return (
+                            <span className="rounded-sm bg-mineshaft-700 px-1.5 py-0.5 text-xs text-mineshaft-400">
+                              Gateway v{el.isV1 ? "1" : "2"}
+                            </span>
+                          );
+                        })()}
+                        {"hasReEnrollToken" in el && el.hasReEnrollToken && (
+                          <span className="rounded-sm bg-yellow-900/30 px-1.5 py-0.5 text-xs text-yellow-500">
+                            Re-enrolling
+                          </span>
+                        )}
                       </div>
                     </Td>
                     <Td>
-                      <GatewayHealthStatus heartbeat={el.heartbeat} />
+                      {el.isPending ? (
+                        <span className="text-mineshaft-400">—</span>
+                      ) : (
+                        <GatewayConnectedCell
+                          isV1={el.isV1}
+                          connectedResourcesCount={
+                            "connectedResourcesCount" in el ? el.connectedResourcesCount : 0
+                          }
+                          onClick={() => {
+                            setSelectedGateway({ id: el.id, name: el.name });
+                            handlePopUpOpen("connectedResources");
+                          }}
+                        />
+                      )}
+                    </Td>
+                    <Td>
+                      <GatewayHealthStatus
+                        heartbeat={"heartbeat" in el ? el.heartbeat : null}
+                        lastHealthCheckStatus={
+                          "lastHealthCheckStatus" in el ? el.lastHealthCheckStatus : null
+                        }
+                        isPending={el.isPending}
+                      />
                     </Td>
                     <Td className="w-5">
                       <Tooltip className="max-w-sm text-center" content="Options">
@@ -186,6 +321,14 @@ export const GatewayTab = withPermission(
                             >
                               Copy ID
                             </DropdownMenuItem>
+                            {!el.isV1 && !el.isPending && (
+                              <DropdownMenuItem
+                                icon={<FontAwesomeIcon icon={faHeartPulse} />}
+                                onClick={() => handleTriggerHealthCheck(el.id)}
+                              >
+                                Trigger Health Check
+                              </DropdownMenuItem>
+                            )}
                             {el.isV1 && (
                               <OrgPermissionCan
                                 I={OrgGatewayPermissionActions.EditGateways}
@@ -202,6 +345,23 @@ export const GatewayTab = withPermission(
                                 )}
                               </OrgPermissionCan>
                             )}
+                            {!el.isV1 &&
+                              (el.isPending || ("identityId" in el && !el.identityId)) && (
+                                <OrgPermissionCan
+                                  I={OrgGatewayPermissionActions.EditGateways}
+                                  a={OrgPermissionSubjects.Gateway}
+                                >
+                                  {(isAllowed: boolean) => (
+                                    <DropdownMenuItem
+                                      isDisabled={!isAllowed}
+                                      icon={<FontAwesomeIcon icon={faArrowsRotate} />}
+                                      onClick={() => handlePopUpOpen("reEnrollGateway", el)}
+                                    >
+                                      Re-enroll
+                                    </DropdownMenuItem>
+                                  )}
+                                </OrgPermissionCan>
+                              )}
                             <OrgPermissionCan
                               I={OrgGatewayPermissionActions.DeleteGateways}
                               a={OrgPermissionSubjects.Gateway}
@@ -248,9 +408,7 @@ export const GatewayTab = withPermission(
             )}
             <DeleteActionModal
               isOpen={popUp.deleteGateway.isOpen}
-              title={`Are you sure you want to delete gateway ${
-                (popUp?.deleteGateway?.data as { name: string })?.name || ""
-              }?`}
+              title={`Are you sure you want to delete gateway ${(popUp?.deleteGateway?.data as { name: string })?.name || ""}?`}
               onChange={(isOpen) => handlePopUpToggle("deleteGateway", isOpen)}
               deleteKey="confirm"
               onDeleteApproved={() => handleDeleteGateway()}
@@ -259,6 +417,28 @@ export const GatewayTab = withPermission(
               isOpen={popUp.deployGateway.isOpen}
               onOpenChange={(isOpen) => handlePopUpToggle("deployGateway", isOpen)}
             />
+            <ReEnrollGatewayModal
+              isOpen={popUp.reEnrollGateway.isOpen}
+              onOpenChange={(isOpen) => handlePopUpToggle("reEnrollGateway", isOpen)}
+              gatewayData={
+                popUp.reEnrollGateway.data as {
+                  id: string;
+                  name: string;
+                  isPending: boolean;
+                } | null
+              }
+            />
+            {selectedGateway && (
+              <GatewayConnectedResourcesDrawer
+                isOpen={popUp.connectedResources.isOpen}
+                onOpenChange={(isOpen) => {
+                  handlePopUpToggle("connectedResources", isOpen);
+                  if (!isOpen) setSelectedGateway(null);
+                }}
+                gatewayId={selectedGateway.id}
+                gatewayName={selectedGateway.name}
+              />
+            )}
           </TableContainer>
         </div>
       </div>
